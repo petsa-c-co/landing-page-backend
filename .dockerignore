@@ -1,0 +1,43 @@
+# Archivos y carpetas a ignorar al construir la imagen de Docker
+node_modules
+dist
+build
+.git
+.gitignore
+
+# Secretos y entorno (se inyectan en runtime vía env_file, nunca en la imagen)
+.env
+.env.*
+
+# Datos de la base de datos (bind mount de desarrollo) — NUNCA deben entrar
+# al contexto de build ni copiarse a la imagen.
+postgres/
+../data/
+
+# Tests, docs y previews
+test/
+*.md
+email-previews/
+coverage
+
+# Editores / IDE
+.vscode
+.idea
+
+# Logs y temporales
+*.log
+.temp
+.tmp
+
+# Skills / asistentes de IA
+.skills/
+skills/
+.trae/
+trae/
+.agents/
+.claude/
+.claude*
+skills-lock.json
+
+# Plantillas Docker (no se usan dentro de la imagen)
+docker-templates/

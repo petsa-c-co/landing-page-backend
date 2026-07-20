@@ -1,0 +1,47 @@
+# Dockerfile genérico para NestJS (multi-stage)
+# Uso: Cambia nombres, rutas de healthcheck, etc., según tu proyecto.
+# La versión de pnpm se toma del campo "packageManager" de package.json;
+# corepack la fija de forma reproducible (no se usa "latest").
+#
+# IMPORTANTE: se copian .npmrc, .pnpmfile.cjs y pnpm-workspace.yaml antes del
+# install porque el lockfile congelado valida el checksum del pnpmfile y esos
+# archivos habilitan la compilación de módulos nativos (p. ej. bcrypt). Elimina
+# los que tu proyecto no use.
+
+# Etapa base (compartida)
+FROM node:24-alpine AS base
+WORKDIR /app
+RUN corepack enable
+
+# Dependencias de PRODUCCIÓN (con toolchain para módulos nativos como bcrypt)
+FROM base AS prod-deps
+RUN apk add --no-cache python3 make g++
+COPY package.json pnpm-lock.yaml .npmrc .pnpmfile.cjs pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile --prod
+
+# Build (dependencias completas + compilación TypeScript)
+FROM base AS builder
+RUN apk add --no-cache python3 make g++
+COPY package.json pnpm-lock.yaml .npmrc .pnpmfile.cjs pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm run build
+
+# Desarrollo (hot-reload, dependencias completas)
+FROM base AS development
+RUN apk add --no-cache python3 make g++
+COPY package.json pnpm-lock.yaml .npmrc .pnpmfile.cjs pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+CMD ["pnpm", "run", "start:dev"]
+
+# Producción: imagen final liviana, sin toolchain, usuario no-root
+FROM base AS production
+ENV NODE_ENV=production
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY package.json ./
+USER node
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/api" || exit 1
+CMD ["node", "dist/main.js"]

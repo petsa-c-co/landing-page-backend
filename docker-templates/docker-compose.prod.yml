@@ -1,0 +1,69 @@
+# docker-compose genérico para PRODUCCIÓN
+# Uso: Renombra a docker-compose.prod.yml y adapta nombres, variables, etc.
+# IMPORTANTE: la interpolación de ${VARIABLES} NO lee env_file; se toma de .env
+# o de --env-file. Levantar con:
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+services:
+  # Backend de NestJS (producción)
+  backend:
+    container_name: ${PROJECT_NAME}-backend-prod
+    build:
+      context: .
+      target: production
+    restart: unless-stopped
+    init: true
+    ports:
+      - '127.0.0.1:${HOST_PORT}:${PORT}'
+    env_file:
+      - .env.prod
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:${PORT}/api']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  # Base de datos PostgreSQL (producción)
+  db:
+    container_name: ${PROJECT_NAME}-db-prod
+    image: postgres:17-alpine
+    restart: unless-stopped
+    init: true
+    # Sin 'ports': la DB solo es accesible por la red interna del compose.
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+    volumes:
+      - ../data/postgres_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DATABASE_USER} -d ${DATABASE_NAME}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+networks:
+  app-network:
+    driver: bridge
+    name: ${PROJECT_NAME}-network-prod

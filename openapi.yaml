@@ -1,0 +1,584 @@
+openapi: 3.0.0
+info:
+    title: 'Petrogassa API'
+    description: >
+        API de autenticación con NestJS (modelo cerrado, sin registro público):
+        un admin da de alta usuarios por invitación; cada invitado activa su
+        cuenta definiendo nombre, apellido y contraseña. Login con JWT en cookies
+        HttpOnly, refresh tokens rotados (hasheados en DB, con detección de
+        reutilización) y recuperación de contraseña. Todas las respuestas usan un
+        sobre estándar (ver esquemas `SuccessEnvelope` / `ErrorResponse`).
+    version: '0.0.1'
+servers:
+    - url: /api
+      description: Servidor local
+
+tags:
+    - name: Auth
+      description: Autenticación, alta e invitación de usuarios y gestión de sesiones
+    - name: Users
+      description: Consulta de usuarios (requiere sesión)
+
+paths:
+    /auth/users:
+        post:
+            tags: [Auth]
+            summary: Invitar (dar de alta) un usuario — solo admin
+            description: >
+                Crea una cuenta PENDIENTE (solo email + roles) y envía un correo
+                con el enlace de activación. El usuario define su nombre, apellido
+                y contraseña al activarse. Requiere sesión con rol admin. El admin
+                puede asignar el rol `admin`.
+            security:
+                - cookieAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/InviteUserDto'
+            responses:
+                '201':
+                    description: Usuario invitado (pendiente de activación).
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Usuario invitado. Se le envió un correo para activar su cuenta.'
+                                          data:
+                                              $ref: '#/components/schemas/UserEntity'
+                '400':
+                    $ref: '#/components/responses/ValidationError'
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '409':
+                    $ref: '#/components/responses/Conflict'
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+    /auth/users/{id}/resend-activation:
+        post:
+            tags: [Auth]
+            summary: Reenviar la invitación de activación — solo admin
+            description: >
+                Revoca los tokens de activación previos del usuario y envía uno
+                nuevo. Útil si el enlace expiró. Requiere sesión con rol admin.
+            security:
+                - cookieAuth: []
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                      type: string
+                      format: uuid
+            responses:
+                '201':
+                    description: Invitación reenviada.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Invitación reenviada correctamente'
+                                          data:
+                                              nullable: true
+                                              example: null
+                '400':
+                    $ref: '#/components/responses/ValidationError'
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+    /auth/activate:
+        post:
+            tags: [Auth]
+            summary: Activar una cuenta invitada
+            description: >
+                El invitado define nombre, apellido y contraseña con el token
+                recibido por correo. Lo invoca la página `/activate` del frontend.
+                Al completarse, la cuenta queda activa y verificada.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ActivateAccountDto'
+            responses:
+                '201':
+                    description: Cuenta activada.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Cuenta activada correctamente. Ya puedes iniciar sesión.'
+                                          data:
+                                              nullable: true
+                                              example: null
+                '400':
+                    $ref: '#/components/responses/ValidationError'
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+    /auth/login:
+        post:
+            tags: [Auth]
+            summary: Iniciar sesión
+            description: >
+                Autentica al usuario y establece las cookies `accessToken` (15m,
+                Path=/) y `refreshToken` (7d, Path=/api/auth), ambas HttpOnly +
+                SameSite=Strict (+ Secure en producción).
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/LoginUserDto'
+            responses:
+                '201':
+                    description: Login exitoso; cookies de sesión establecidas.
+                    headers:
+                        Set-Cookie:
+                            description: Cookies `accessToken` y `refreshToken`.
+                            schema:
+                                type: string
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Inicio de sesión exitoso'
+                                          data:
+                                              $ref: '#/components/schemas/PublicUser'
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+    /auth/refresh:
+        post:
+            tags: [Auth]
+            summary: Refrescar tokens de sesión
+            description: >
+                Lee el `refreshToken` de la cookie, lo rota (revoca el anterior)
+                y actualiza las cookies. Si se presenta un token ya rotado, se
+                interpreta como robo y se revocan TODAS las sesiones del usuario.
+            parameters:
+                - in: cookie
+                  name: refreshToken
+                  required: true
+                  schema:
+                      type: string
+            responses:
+                '201':
+                    description: Sesión renovada; cookies actualizadas.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Sesión renovada correctamente'
+                                          data:
+                                              nullable: true
+                                              example: null
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+    /auth/logout:
+        post:
+            tags: [Auth]
+            summary: Cerrar sesión
+            description: Revoca el `refreshToken` en la DB y elimina las cookies.
+            parameters:
+                - in: cookie
+                  name: refreshToken
+                  required: false
+                  schema:
+                      type: string
+            responses:
+                '201':
+                    description: Sesión cerrada; cookies eliminadas.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Sesión cerrada correctamente'
+                                          data:
+                                              nullable: true
+                                              example: null
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+    /auth/forgot-password:
+        post:
+            tags: [Auth]
+            summary: Solicitar recuperación de contraseña
+            description: >
+                Envía un correo de recuperación si la cuenta existe y está activa.
+                Por anti-enumeración, la respuesta es idéntica en cualquier caso.
+                Límite reforzado: 3 peticiones/min por IP.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ForgotPasswordDto'
+            responses:
+                '201':
+                    description: Petición procesada (respuesta neutra).
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Si el correo electrónico está registrado, te enviaremos un correo con instrucciones para restablecer tu contraseña'
+                                          data:
+                                              nullable: true
+                                              example: null
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+    /auth/reset-password:
+        post:
+            tags: [Auth]
+            summary: Restablecer contraseña
+            description: >
+                Define una nueva contraseña validando el token del correo. Al
+                completarse, se revocan todas las sesiones activas del usuario.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ResetPasswordDto'
+            responses:
+                '201':
+                    description: Contraseña restablecida.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Contraseña restablecida correctamente'
+                                          data:
+                                              nullable: true
+                                              example: null
+                '400':
+                    $ref: '#/components/responses/ValidationError'
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+    /users/{id}:
+        get:
+            tags: [Users]
+            summary: Obtener un usuario por id
+            description: >
+                Requiere sesión (cookie `accessToken`). Un usuario solo puede
+                consultarse a sí mismo; un admin puede consultar a cualquiera.
+            security:
+                - cookieAuth: []
+            parameters:
+                - in: path
+                  name: id
+                  required: true
+                  schema:
+                      type: string
+                      format: uuid
+            responses:
+                '200':
+                    description: Usuario obtenido.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          message:
+                                              example: 'Usuario obtenido correctamente'
+                                          data:
+                                              $ref: '#/components/schemas/UserEntity'
+                '400':
+                    $ref: '#/components/responses/ValidationError'
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+                '429':
+                    $ref: '#/components/responses/TooManyRequests'
+
+components:
+    securitySchemes:
+        cookieAuth:
+            type: apiKey
+            in: cookie
+            name: accessToken
+
+    responses:
+        ValidationError:
+            description: Error de validación (Bad Request)
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/ErrorResponse'
+        Unauthorized:
+            description: No autenticado / credenciales o token inválidos
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/ErrorResponse'
+        Forbidden:
+            description: Autenticado pero sin permisos suficientes
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/ErrorResponse'
+        NotFound:
+            description: El recurso solicitado no existe
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/ErrorResponse'
+        Conflict:
+            description: Conflicto con un registro existente (p. ej. email en uso)
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/ErrorResponse'
+        TooManyRequests:
+            description: >
+                Límite de peticiones excedido (global: 100/min por IP; endpoints
+                de auth: 10/min; forgot-password: 3/min).
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/ErrorResponse'
+
+    schemas:
+        SuccessEnvelope:
+            type: object
+            description: Sobre estándar de respuestas exitosas.
+            properties:
+                success:
+                    type: boolean
+                    example: true
+                statusCode:
+                    type: integer
+                    example: 200
+                message:
+                    type: string
+                    example: 'Operación exitosa'
+                data:
+                    description: Carga útil (objeto, array o null).
+                meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+            required: [success, statusCode, message, data]
+
+        PaginationMeta:
+            type: object
+            description: Metadata de paginación (presente solo en listas paginadas).
+            properties:
+                totalItems: { type: integer, example: 145 }
+                itemsPerPage: { type: integer, example: 10 }
+                currentPage: { type: integer, example: 2 }
+                totalPages: { type: integer, example: 15 }
+                hasNextPage: { type: boolean, example: true }
+                hasPrevPage: { type: boolean, example: true }
+                nextPageUrl:
+                    type: string
+                    nullable: true
+                    example: '/api/products?limit=10&page=3'
+                prevPageUrl:
+                    type: string
+                    nullable: true
+                    example: '/api/products?limit=10&page=1'
+
+        ErrorResponse:
+            type: object
+            description: Sobre estándar de errores (lo formatean los Exception Filters).
+            properties:
+                success: { type: boolean, example: false }
+                statusCode: { type: integer, example: 400 }
+                message:
+                    type: string
+                    example: 'La contraseña debe tener al menos 8 caracteres...'
+                errors:
+                    type: array
+                    nullable: true
+                    items: { type: string }
+                timestamp: { type: string, format: date-time }
+                path: { type: string, example: '/api/auth/activate' }
+
+        InviteUserDto:
+            type: object
+            required: [email]
+            description: Datos que el admin provee al invitar a un usuario.
+            properties:
+                email:
+                    type: string
+                    format: email
+                    maxLength: 254
+                    example: 'juan.perez@example.com'
+                roles:
+                    type: array
+                    description: Opcional. Por defecto ['user']. El admin puede asignar 'admin'.
+                    items:
+                        type: string
+                        enum: [user, admin]
+                    example: ['user']
+
+        ActivateAccountDto:
+            type: object
+            required: [token, name, surname, password]
+            description: Datos que el usuario invitado define al activar su cuenta.
+            properties:
+                token:
+                    type: string
+                    pattern: '^[a-f0-9]{64}$'
+                    description: 'Token opaco (hex de 64 caracteres) extraído del enlace de activación.'
+                    example: '3f1a9c0e5b7d2a4f8e6c1b0a9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e'
+                name:
+                    type: string
+                    minLength: 2
+                    maxLength: 25
+                    example: 'Juan'
+                surname:
+                    type: string
+                    minLength: 2
+                    maxLength: 25
+                    example: 'Perez'
+                password:
+                    type: string
+                    minLength: 8
+                    maxLength: 64
+                    description: 'Debe contener mayúscula, minúscula, número y carácter especial.'
+                    example: 'P@ssword123'
+
+        LoginUserDto:
+            type: object
+            required: [email, password]
+            properties:
+                email:
+                    type: string
+                    format: email
+                    example: 'juan.perez@example.com'
+                password:
+                    type: string
+                    example: 'P@ssword123'
+
+        ForgotPasswordDto:
+            type: object
+            required: [email]
+            properties:
+                email:
+                    type: string
+                    format: email
+                    example: 'juan.perez@example.com'
+
+        ResetPasswordDto:
+            type: object
+            required: [token, newPassword]
+            properties:
+                token:
+                    type: string
+                    pattern: '^[a-f0-9]{64}$'
+                    description: 'Token opaco (hex de 64 caracteres) extraído del enlace del correo.'
+                    example: '3f1a9c0e5b7d2a4f8e6c1b0a9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e'
+                newPassword:
+                    type: string
+                    minLength: 8
+                    maxLength: 64
+                    description: 'Debe contener mayúscula, minúscula, número y carácter especial.'
+                    example: 'N3wP@ssword!'
+
+        PublicUser:
+            type: object
+            description: Proyección segura del usuario (sin datos sensibles).
+            properties:
+                id:
+                    type: string
+                    format: uuid
+                    example: '550e8400-e29b-41d4-a716-446655440000'
+                email:
+                    type: string
+                    example: 'juan.perez@example.com'
+                name:
+                    type: string
+                    example: 'Juan'
+                surname:
+                    type: string
+                    example: 'Perez'
+
+        UserEntity:
+            type: object
+            description: >
+                Entidad de usuario serializada (password excluido por @Exclude).
+                En una cuenta PENDIENTE de activación, name y surname son null.
+            allOf:
+                - $ref: '#/components/schemas/PublicUser'
+                - type: object
+                  properties:
+                      name:
+                          type: string
+                          nullable: true
+                          example: 'Juan'
+                      surname:
+                          type: string
+                          nullable: true
+                          example: 'Perez'
+                      isActive:
+                          type: boolean
+                          example: true
+                      isEmailVerified:
+                          type: boolean
+                          example: true
+                      roles:
+                          type: array
+                          items:
+                              type: string
+                              enum: [user, admin]
+                          example: ['user']
+                      createdAt:
+                          type: string
+                          format: date-time
+                      updatedAt:
+                          type: string
+                          format: date-time

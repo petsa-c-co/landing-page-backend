@@ -1,0 +1,56 @@
+# docker-compose genérico para DESARROLLO
+# Uso: Renombra a docker-compose.dev.yml y adapta nombres, variables, etc.
+# Levantar con:  docker compose -f docker-compose.dev.yml --env-file .env.dev up -d
+services:
+  # Backend de NestJS (desarrollo)
+  backend:
+    container_name: ${PROJECT_NAME}-backend-dev
+    build:
+      context: .
+      target: development
+    restart: unless-stopped
+    init: true
+    ports:
+      - '127.0.0.1:${HOST_PORT}:${PORT}'
+    volumes:
+      - .:/app
+      - /app/node_modules
+    env_file:
+      - .env.dev
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # Base de datos PostgreSQL (desarrollo)
+  db:
+    container_name: ${PROJECT_NAME}-db-dev
+    image: postgres:17-alpine
+    restart: unless-stopped
+    init: true
+    ports:
+      - '127.0.0.1:${DATABASE_HOST_PORT}:5432'
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    networks:
+      - app-network
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DATABASE_USER} -d ${DATABASE_NAME}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data_dev:
+
+networks:
+  app-network:
+    driver: bridge
+    name: ${PROJECT_NAME}-network-dev
