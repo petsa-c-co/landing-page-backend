@@ -57,6 +57,49 @@ services:
           cpus: '1'
           memory: 1G
 
+  # Frontend (React + Vite), servido por su propio nginx dentro del contenedor.
+  #
+  # El contexto de build es la carpeta hermana ../frontend, así que ambos
+  # proyectos tienen que estar uno al lado del otro en el servidor.
+  #
+  # No depende del backend para arrancar: sirve archivos estáticos. Sí lo
+  # necesita al CONSTRUIR, y solo para las vistas previas al compartir enlaces
+  # (ver VITE_API_URL abajo).
+  frontend:
+    container_name: ${PROJECT_NAME:-petrogassa-landing}-frontend
+    build:
+      context: ../frontend
+      args:
+        # Vite incrusta esta URL DENTRO del JavaScript al compilar: es una
+        # variable de BUILD, no de runtime. Cambiarla exige reconstruir la
+        # imagen, no alcanza con reiniciar el contenedor.
+        #
+        # El mismo valor lo usa scripts/prerender.mjs para pedirle al backend
+        # los servicios y las novedades, y escribir las etiquetas de vista
+        # previa de LinkedIn y WhatsApp. Si la API no responde durante el build,
+        # avisa y sigue: el sitio queda bien, solo sin esas vistas previas.
+        VITE_API_URL: ${VITE_API_URL:-https://petrogassa.com/api}
+    restart: unless-stopped
+    init: true
+    # Solo loopback: el nginx del host es el único que le habla.
+    ports:
+      - '127.0.0.1:${FRONTEND_HOST_PORT:-3101}:80'
+    networks:
+      - app-network
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1/']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
   # Base de datos PostgreSQL (producción)
   db:
     container_name: ${PROJECT_NAME:-petrogassa-landing}-db
