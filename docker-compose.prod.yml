@@ -21,14 +21,19 @@ services:
     env_file:
       - .env.prod
     volumes:
-      # Almacenamiento de archivos. HOST_STORAGE_PATH apunta al montaje NFS del
-      # servidor (p. ej. /mnt/petrogassa) y dentro del contenedor se ve en la
-      # ruta que indica STORAGE_PATH del .env.prod.
+      # Almacenamiento de archivos: las imágenes que se suben desde el panel.
+      # Son contenido real del sitio, así que esta carpeta va en las copias de
+      # seguridad junto con la base.
       #
-      # IMPORTANTE: el contenedor corre como usuario NO root, así que ese
-      # directorio (y el export NFS) tiene que permitirle escribir. Si el NFS
-      # está exportado con root_squash, hay que darle permisos al UID de la
-      # imagen o exportarlo con las opciones adecuadas.
+      # Por defecto cae en ../data/storage, al lado del proyecto y FUERA de
+      # cualquier docroot. HOST_STORAGE_PATH solo hace falta para llevarla a
+      # otro lado —otro disco, un montaje de red— y entonces tiene que ser una
+      # ruta absoluta.
+      #
+      # IMPORTANTE: el contenedor corre como usuario NO root, con UID 1000, así
+      # que esa carpeta del host tiene que dejarlo escribir. Conviene crearla a
+      # mano ANTES del primer arranque: si la crea Docker queda de root y las
+      # subidas de imágenes fallan sin que nadie lo note hasta probarlas.
       #
       # El destino va FIJO y no interpolado: Docker exige una ruta absoluta, y
       # STORAGE_PATH admite una relativa (el .env.prod trae `./storage`, que

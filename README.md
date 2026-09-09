@@ -160,9 +160,9 @@ La API queda en `http://localhost:3100/api`. La documentación Swagger (solo fue
 
 > El puerto es **3100**, no el 3000 habitual de Nest: en esta máquina conviven varios proyectos y el 3000 lo ocupa otro backend. Se define con `PORT` en el `.env`.
 
-## 🗄️ Almacenamiento de archivos (filesystem / NFS)
+## 🗄️ Almacenamiento de archivos (filesystem)
 
-Las imágenes del sitio se guardan **en disco**, no en un servicio externo. En producción esa ruta es un **montaje NFS** del servidor de archivos de la empresa; en desarrollo, una carpeta local que se crea sola.
+Las imágenes del sitio se guardan **en disco**, no en un servicio externo. En producción esa ruta es un volumen del host montado en el contenedor; en desarrollo, una carpeta local que se crea sola.
 
 Debajo de `STORAGE_PATH` hay **una sola** carpeta, `public/`, con las imágenes y los PDFs del sitio (prefijo de key `media/`), y se publica entera por HTTP.
 
@@ -171,10 +171,15 @@ Debajo de `STORAGE_PATH` hay **una sola** carpeta, `public/`, con las imágenes 
 - El backend sirve `public/` como estáticos con `Cache-Control: public, max-age=1y, immutable`. Es seguro cachear tan agresivo porque cada archivo tiene un nombre UUID irrepetible: al reemplazar una imagen cambia la key, así que **el contenido de una URL nunca cambia**.
 - `MEDIA_PUBLIC_BASE_URL` define la base de las URLs que se guardan/devuelven. Es **obligatoria y sin valor por defecto**: en producción tiene que apuntar al dominio real, o las entidades quedan guardando URLs a `localhost`. Normalmente es el propio backend; si mañana un **nginx o un CDN** sirven esa misma carpeta, se apunta esa variable ahí y **no hay que tocar código**.
 - Las keys en la base siguen con el mismo formato que tenían con S3 (`media/2026/07/<uuid>.webp`), así que el contenido ya cargado sigue siendo válido.
-- La escritura es **atómica** (archivo temporal + `rename`): un lector nunca ve un archivo a medio escribir, algo que importa en NFS donde la escritura puede ser lenta.
+- La escritura es **atómica** (archivo temporal + `rename`): un lector nunca ve un archivo a medio escribir, ni siquiera si la escritura es lenta o el proceso muere a mitad de camino.
 - Las keys se validan contra **path traversal**: una key con `..` o una ruta absoluta no puede salir de la raíz pública. Es un riesgo propio del filesystem que con S3 no existía.
 
-**Al desplegar:** montar el NFS en el host y apuntar `HOST_STORAGE_PATH` a ese punto de montaje (`docker-compose.prod.yml` lo mapea dentro del contenedor en `STORAGE_PATH`). El contenedor corre como **usuario no root**, así que ese directorio tiene que permitirle escribir; si el export NFS usa `root_squash`, hay que contemplar el UID de la imagen. Y el volumen entra en el esquema de backups: ahí viven las imágenes del sitio.
+**Al desplegar:** por defecto el volumen cae en `../data/storage`, junto al proyecto y **fuera de todo docroot**. `HOST_STORAGE_PATH` solo hace falta para llevarlo a otro disco o a un montaje de red, y en ese caso tiene que ser una ruta **absoluta**.
+
+Dos cosas que se pagan caro si se pasan por alto:
+
+- El contenedor corre como **usuario no root, UID 1000**, así que esa carpeta del host tiene que dejarlo escribir. Conviene **crearla a mano antes del primer arranque**: si la crea Docker queda de `root` y las subidas fallan sin aviso hasta que alguien las prueba.
+- Esa carpeta **entra en el esquema de backups**, junto con la base. Ahí viven las imágenes del sitio: si se pierde, la base queda apuntando a archivos que no existen.
 
 ## 📦 Ejecución en producción (Docker)
 
@@ -184,7 +189,59 @@ La forma verificada de desplegar es con Docker. La interpolación de `${VARIABLE
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
 ```
 
-Esto construye la etapa `production` del Dockerfile (imagen liviana, **usuario no-root**, con `HEALTHCHECK`) y levanta backend + BD en una red interna. La documentación Swagger queda **deshabilitada** en producción.
+La documentación Swagger queda **deshabilitada** en producción.
+
+### Qué levanta, y de dónde sale cada imagen
+
+Son **tres servicios** y **dos Dockerfiles**, uno por proyecto. La base de datos no se construye: se usa la imagen oficial.
+
+| Servicio | Imagen | Puerto en el host |
+|---|---|---|
+| `backend` | `backend/Dockerfile`, etapa `production` | `127.0.0.1:3100` |
+| `frontend` | `frontend/Dockerfile` (React compilado + nginx) | `127.0.0.1:3101` |
+| `db` | `postgres:17-alpine`, oficial | ninguno |
+
+La imagen del backend es liviana, corre como **usuario no root** y trae `HEALTHCHECK`.
+
+El compose vive **solo en este repositorio** y es el único archivo que hay que invocar, pero construye el frontend usando `../frontend` como contexto. Por eso los dos proyectos tienen que estar **uno al lado del otro** en el servidor:
+
+```
+app-2026/
+├── backend/    <- este repositorio (acá está el compose)
+├── frontend/   <- repositorio del frontend
+└── data/       <- base de datos e imágenes subidas
+```
+
+Los tres servicios escuchan **solo en loopback**: el despliegue asume un nginx en el host que termina TLS y hace de proxy.
+
+### Consideraciones del frontend
+
+**`VITE_API_URL` es una variable de BUILD, no de runtime.** Vite la incrusta dentro del JavaScript al compilar, así que cambiarla exige **reconstruir la imagen**; reiniciar el contenedor no hace absolutamente nada. Por eso va en `args` del compose y no en `environment`.
+
+Tiene que ser **absoluta, con el prefijo `/api` y sin barra final** (`https://petrogassa.com/api`). El `/api` relativo que se usa en desarrollo no sirve acá, y el motivo es que esa misma variable tiene un segundo consumidor:
+
+**El build consulta la API.** Después de `vite build`, `scripts/prerender.mjs` le pide al backend los servicios y las novedades para escribir en cada HTML las etiquetas de vista previa de LinkedIn y WhatsApp, que son robots que no ejecutan JavaScript. Ese `fetch` corre en Node, que exige una URL absoluta: con una relativa falla.
+
+**Si la API no responde, el build NO falla**: avisa y sigue. Se pierden las vistas previas de las páginas de detalle, no el despliegue.
+
+Eso tiene una consecuencia práctica el día del estreno, cuando el dominio todavía apunta al sitio anterior: la primera construcción muestra ese aviso, y **una vez que nginx apunta al sitio nuevo conviene reconstruir el frontend** para que las vistas previas se generen.
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build frontend
+```
+
+Por lo mismo, esas etiquetas **quedan congeladas en el momento del build**. Si se publica una novedad y se quiere que se vea con foto y título al compartirla, hay que reconstruir esa imagen.
+
+### Qué tiene que repartir el nginx del host
+
+| Ruta | A dónde |
+|---|---|
+| `/api/...` | backend |
+| `/media/...` | backend (imágenes subidas) |
+| `/sitemap.xml` | backend (se genera solo, y va fuera del prefijo `/api`) |
+| todo lo demás | frontend |
+
+Con `client_max_body_size` de al menos **12 MB** —el archivo más grande admitido son 10 MB— y las cabeceras `X-Forwarded-*`. Esas cabeceras no son cosmética: el backend confía en el proxy para conocer la IP real de cada visitante, que es con lo que limita los intentos de inicio de sesión. Sin ellas, todos comparten un mismo cupo.
 
 Ver logs:
 
@@ -262,7 +319,7 @@ El backend gestiona el contenido del sitio.
 | Config del sitio | `GET /api/site-settings` (público, cacheable; marca de certificación BV del footer + texto de alcance) · `PATCH` (singleton, upsert) | admin |
 | Imágenes del sitio | `GET /api/site-settings/images` (público, cacheable; banners de cabecera de las páginas fijas y fotos del inicio, por **slot**) · `PATCH` (`{ slot, imageKey }`; null limpia) | admin |
 
-**Almacenamiento (filesystem / NFS):**
+**Almacenamiento (filesystem):**
 - Área **pública**: imágenes de contenido y **documentos PDF públicos** (p. ej. certificados ISO). Se guarda la **key** en la DB y la API devuelve URLs absolutas armadas con `MEDIA_PUBLIC_BASE_URL`. Imágenes por `POST /media/uploads` (PNG/JPEG/WebP, 4 MB); PDFs por `POST /media/documents` (10 MB).
 - Ya **no hay área privada**: los CVs no se guardan (van directo a Gestión Petrogas). El almacenamiento administra solo la carpeta pública.
 - Todo archivo se valida por **magic bytes** (tipo real, no el mimetype declarado): PNG/JPEG/WebP (SVG prohibido) y PDF.
