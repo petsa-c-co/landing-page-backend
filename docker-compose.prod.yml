@@ -2,19 +2,41 @@
 # IMPORTANTE: la interpolación de ${VARIABLES} NO lee env_file; se toma de .env
 # o de --env-file. Levantar con:
 #   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# "name" fija el proyecto de Compose (ver docker-compose.yml para el motivo:
+# sin esto, dos carpetas con el mismo nombre pueden colisionar y Compose puede
+# recrear/destruir contenedores de un proyecto ajeno).
+name: petrogassa-landing-prod
 services:
   # Backend de NestJS (producción)
   backend:
-    container_name: ${PROJECT_NAME}-backend
+    container_name: ${PROJECT_NAME:-petrogassa-landing}-backend
     build:
       context: .
       target: production
     restart: unless-stopped
     init: true
     ports:
-      - '127.0.0.1:${HOST_PORT}:${PORT}'
+      - '127.0.0.1:${HOST_PORT:-3000}:${PORT:-3000}'
     env_file:
       - .env.prod
+    volumes:
+      # Almacenamiento de archivos. HOST_STORAGE_PATH apunta al montaje NFS del
+      # servidor (p. ej. /mnt/petrogassa) y dentro del contenedor se ve en la
+      # ruta que indica STORAGE_PATH del .env.prod.
+      #
+      # IMPORTANTE: el contenedor corre como usuario NO root, así que ese
+      # directorio (y el export NFS) tiene que permitirle escribir. Si el NFS
+      # está exportado con root_squash, hay que darle permisos al UID de la
+      # imagen o exportarlo con las opciones adecuadas.
+      #
+      # El destino va FIJO y no interpolado: Docker exige una ruta absoluta, y
+      # STORAGE_PATH admite una relativa (el .env.prod trae `./storage`, que
+      # Node resuelve bien desde el WORKDIR /app pero rompe el mount con
+      # "mount path must be absolute" al crear el contenedor, o sea DESPUÉS de
+      # que --build ya construyó la imagen). /app/storage es exactamente donde
+      # `./storage` resuelve adentro, así que el valor del .env no cambia nada.
+      - ${HOST_STORAGE_PATH:-../data/storage}:/app/storage
     depends_on:
       db:
         condition: service_healthy
@@ -24,7 +46,7 @@ services:
       - no-new-privileges:true
     healthcheck:
       test:
-        ['CMD', 'wget', '-qO-', 'http://127.0.0.1:${PORT}/api']
+        ['CMD', 'wget', '-qO-', 'http://127.0.0.1:${PORT:-3000}/api']
       interval: 30s
       timeout: 5s
       retries: 3
@@ -37,14 +59,14 @@ services:
 
   # Base de datos PostgreSQL (producción)
   db:
-    container_name: ${PROJECT_NAME}-db
+    container_name: ${PROJECT_NAME:-petrogassa-landing}-db
     image: postgres:17-alpine
     restart: unless-stopped
     init: true
     # Sin 'ports': la DB solo es accesible por la red interna del compose.
     # Para depurar puntualmente, descomentar (queda atado a loopback):
     # ports:
-    #   - '127.0.0.1:${DATABASE_HOST_PORT}:5432'
+    #   - '127.0.0.1:${DATABASE_HOST_PORT:-5432}:5432'
     environment:
       POSTGRES_USER: ${DATABASE_USER}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
@@ -70,4 +92,4 @@ services:
 networks:
   app-network:
     driver: bridge
-    name: ${PROJECT_NAME}-network
+    name: ${PROJECT_NAME:-petrogassa-landing}-network

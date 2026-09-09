@@ -13,8 +13,16 @@
     "target": "ES2023",
     "sourceMap": true,
     "outDir": "./dist",
+    "rootDir": "./src",
     // "baseUrl": "./",
     "incremental": true,
+    // El cache incremental vive DENTRO de dist/. nest-cli tiene
+    // deleteOutDir:true, que borra dist/ antes de cada build; si el cache
+    // quedara en la raíz sobreviviría a ese borrado y tsc creería que ya
+    // compiló ("Found 0 errors" pero sin emitir), dejando dist/ vacío y
+    // rompiendo el arranque con "Cannot find module dist/main". Poniéndolo
+    // acá, cache y salida se borran juntos y nunca se desincronizan.
+    "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo",
     // "skipLibCheck": true,
     // "strictNullChecks": true,
     // "forceConsistentCasingInFileNames": true,
@@ -30,9 +38,15 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "baseUrl": "./",
     "paths": {
-      "@/*": ["src/*"]
-    }
-  }
+      "@/*": ["./src/*"]
+    },
+    // Con moduleResolution nodenext, TS ya no incluye automáticamente TODOS
+    // los @types/* del proyecto (@types/jest quedaba afuera sin esto,
+    // rompiendo describe/it/expect en los *.spec.ts). Se listan explícitos.
+    "types": ["node", "jest"]
+  },
+  // test/ tiene su propio tsconfig vía test/jest-e2e.json (rootDir ".",
+  // no bajo src/); acá se excluye para no chocar con el rootDir explícito.
+  "exclude": ["node_modules", "dist", "test"]
 }

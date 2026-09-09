@@ -18,6 +18,30 @@ tags:
       description: Autenticación, alta e invitación de usuarios y gestión de sesiones
     - name: Users
       description: Consulta de usuarios (requiere sesión)
+    - name: Services
+      description: Servicios de la empresa (contenido del sitio)
+    - name: Certifications
+      description: Certificaciones ISO (contenido del sitio)
+    - name: Clients
+      description: Clientes mostrados en el index (contenido del sitio)
+    - name: News
+      description: Novedades y prensa (paginado; co-gestión admin/rrhh)
+    - name: Recruitment
+      description: >-
+        Formulario público de postulación y catálogo de títulos académicos. Las
+        postulaciones y los puestos son un puente hacia Gestión Petrogas: este
+        backend no las guarda ni almacena el CV, solo los reenvía. El catálogo de
+        títulos sí es local y lo administra RRHH.
+    - name: Contact
+      description: Formulario de contacto y bandeja de mensajes
+    - name: Media
+      description: Subida de imágenes de contenido al almacenamiento en filesystem
+    - name: SiteSettings
+      description: Configuración global del sitio (singleton; marca de certificación del footer)
+    - name: ChangeLog
+      description: >-
+        Registro de cambios del sitio (control de documentos ISO). Solo lectura:
+        no hay forma de editar ni borrar un asiento.
 
 paths:
     /auth/users:
@@ -304,6 +328,189 @@ paths:
                 '429':
                     $ref: '#/components/responses/TooManyRequests'
 
+    /sitemap.xml:
+        get:
+            tags: [SiteSettings]
+            summary: Sitemap XML del sitio público (sin autenticación)
+            description: >
+                ATENCIÓN: esta ruta vive FUERA del prefijo `/api` — se pide en la
+                raíz del dominio (`https://petrogassa.com/sitemap.xml`) y es la
+                única del backend que no devuelve el sobre estándar
+                `{ success, statusCode, message, data }`: responde XML crudo,
+                porque los buscadores descartan el archivo si viene envuelto en
+                JSON o con otro content-type.
+
+                Contiene las 8 páginas fijas del sitio, un `<url>` por servicio
+                activo y uno por nota publicada, cada uno con `<lastmod>` en
+                formato AAAA-MM-DD. Solo lista contenido que el sitio público
+                sirve: nunca borradores ni elementos en la papelera. El dominio
+                sale de la variable de entorno `PUBLIC_SITE_URL`.
+            responses:
+                '200':
+                    description: Sitemap generado.
+                    headers:
+                        Content-Type:
+                            schema: { type: string, example: 'application/xml; charset=utf-8' }
+                        Cache-Control:
+                            schema: { type: string, example: 'public, max-age=3600' }
+                    content:
+                        application/xml:
+                            schema: { type: string }
+                            example: |
+                                <?xml version="1.0" encoding="UTF-8"?>
+                                <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+                                    <url>
+                                        <loc>https://petrogassa.com/</loc>
+                                    </url>
+                                    <url>
+                                        <loc>https://petrogassa.com/servicios/well-testing</loc>
+                                        <lastmod>2026-03-14</lastmod>
+                                    </url>
+                                </urlset>
+
+    /auth/me:
+        get:
+            tags: [Auth]
+            summary: Usuario de la sesión actual (con sus roles)
+            description: >
+                Devuelve el usuario dueño de la cookie `accessToken`, incluidos
+                `roles` y `status`. Es la única forma que tiene el frontend de
+                conocer el rol tras recargar la página: las cookies son
+                httpOnly y no puede leer el token. La contraseña nunca se
+                expone. Responde 401 si la sesión venció o la cuenta fue
+                desactivada.
+            security:
+                - cookieAuth: []
+            responses:
+                '200': { description: Sesión obtenida. }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /users:
+        get:
+            tags: [Users]
+            summary: Listar usuarios (admin, paginado)
+            description: >
+                Grilla de administración de cuentas. Cada usuario incluye
+                `status` (`pendiente` | `activo` | `desactivado`), derivado de
+                `isActive` y de si la persona llegó a definir su contraseña.
+                La contraseña nunca se expone.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - in: query
+                  name: search
+                  description: Busca en nombre, apellido y email, ignorando mayúsculas y acentos.
+                  schema: { type: string, maxLength: 100 }
+                - { in: query, name: role, schema: { type: string, enum: [admin, rrhh, user] } }
+                - { in: query, name: status, schema: { type: string, enum: [pendiente, activo, desactivado] } }
+                - { in: query, name: page, schema: { type: integer } }
+                - { in: query, name: limit, schema: { type: integer } }
+            responses:
+                '200': { description: Usuarios obtenidos. }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /users/{id}/revoke-sessions:
+        post:
+            tags: [Users]
+            summary: Cerrar todas las sesiones de una cuenta (admin)
+            description: >
+                Revoca los refresh tokens del usuario e invalida sus access
+                tokens ya emitidos, sin darlo de baja: la cuenta sigue activa
+                (`status` no cambia) y puede volver a iniciar sesión con su
+                contraseña. Pensado para una notebook perdida o una sesión
+                abierta en una máquina ajena; para cortar el acceso por completo
+                se usa `deactivate`. Un admin no puede cerrar las propias.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '201':
+                    description: Sesiones cerradas.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    data:
+                                        type: object
+                                        properties:
+                                            sessionsClosed:
+                                                type: integer
+                                                description: Cuántas sesiones se cerraron.
+                                                example: 2
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: Se intentó cerrar las sesiones propias.
+
+    /users/{id}/deactivate:
+        post:
+            tags: [Users]
+            summary: Quitar el acceso a una cuenta (admin)
+            description: >
+                Efecto inmediato: las sesiones abiertas dejan de funcionar en el
+                siguiente request y se revocan sus refresh tokens. Un admin no
+                puede desactivarse a sí mismo.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '201': { description: Acceso desactivado. }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: >
+                        La cuenta ya no tiene acceso, o se intentó desactivar la
+                        propia sesión.
+
+    /users/{id}/reactivate:
+        post:
+            tags: [Users]
+            summary: Devolver el acceso a una cuenta dada de baja (admin)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '201': { description: Acceso restablecido. }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: >
+                        La cuenta ya está activa, o nunca fue activada por su
+                        titular (en ese caso corresponde reenviar la invitación).
+
+    /users/{id}/roles:
+        patch:
+            tags: [Users]
+            summary: Reemplazar los roles de una cuenta (admin)
+            description: >
+                Reemplaza el conjunto completo de roles; no es una modificación
+                parcial. Toma efecto de inmediato, porque los roles se leen de
+                la base en cada request. Un admin no puede cambiarse los suyos.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [roles]
+                            properties:
+                                roles:
+                                    type: array
+                                    minItems: 1
+                                    items: { type: string, enum: [admin, rrhh, user] }
+                            example: { roles: [rrhh] }
+            responses:
+                '200': { description: Roles actualizados. }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: Se intentó cambiar los roles propios.
+
     /users/{id}:
         get:
             tags: [Users]
@@ -344,6 +551,1257 @@ paths:
                     $ref: '#/components/responses/NotFound'
                 '429':
                     $ref: '#/components/responses/TooManyRequests'
+        delete:
+            tags: [Users]
+            summary: Eliminar una invitación pendiente (admin)
+            description: >
+                Único borrado real de usuarios, acotado a cuentas con
+                `status = pendiente`: una invitación que nunca se aceptó no
+                tiene historia que preservar, y es la salida cuando se invitó a
+                una dirección equivocada. Su token de activación se elimina en
+                cascada y el email queda libre para reinvitarlo. Las cuentas en
+                uso responden 409: esas se dan de baja con `deactivate`.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Invitación eliminada. }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: >
+                        La cuenta ya fue activada alguna vez (activa o
+                        desactivada); no se elimina, se desactiva.
+
+
+    /services:
+        get:
+            tags: [Services]
+            summary: Listar servicios (público)
+            description: Servicios activos con sus items, ordenados. Imágenes como URLs absolutas.
+            responses:
+                '200':
+                    description: Servicios obtenidos.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items:
+                                                  $ref: '#/components/schemas/ServiceEntity'
+        post:
+            tags: [Services]
+            summary: Crear servicio (admin)
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateServiceDto'
+            responses:
+                '201': { description: Servicio creado. }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/UniqueConflict' }
+
+    /services/admin:
+        get:
+            tags: [Services]
+            summary: Listar todos los servicios, incluidos inactivos (admin)
+            security: [{ cookieAuth: [] }]
+            responses:
+                '200': { description: Servicios obtenidos. }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /services/{slug}:
+        get:
+            tags: [Services]
+            summary: Obtener un servicio por slug (público)
+            parameters:
+                - { in: path, name: slug, required: true, schema: { type: string } }
+            responses:
+                '200': { description: Servicio obtenido. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /services/{id}:
+        patch:
+            tags: [Services]
+            summary: Actualizar servicio (admin; items = reemplazo total)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateServiceDto'
+            responses:
+                '200': { description: Servicio actualizado. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { $ref: '#/components/responses/UniqueConflict' }
+        delete:
+            tags: [Services]
+            summary: Enviar servicio a la papelera (admin, soft delete)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Servicio movido a la papelera. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /services/admin/trash:
+        get:
+            tags: [Services]
+            summary: Papelera de servicios (admin)
+            security: [{ cookieAuth: [] }]
+            responses:
+                '200':
+                    description: Servicios borrados (soft delete), URLs absolutas.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data: { type: array, items: { $ref: '#/components/schemas/ServiceEntity' } }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /services/{id}/restore:
+        post:
+            tags: [Services]
+            summary: Restaurar un servicio de la papelera (admin)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Servicio restaurado. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: >
+                        Sin `conflict`: el servicio no está en la papelera. Con
+                        `conflict` (inTrash:false): otro servicio activo ya usa ese
+                        slug (defensivo — la papelera reserva el slug, así que no
+                        debería ocurrir en el flujo normal).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/UniqueConflictErrorResponse'
+    /services/{id}/permanent:
+        delete:
+            tags: [Services]
+            summary: Eliminar un servicio definitivamente (admin; borra también las imágenes del almacenamiento)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Servicio eliminado definitivamente. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { description: 'El registro no está en la papelera: hay que enviarlo ahí antes de eliminarlo definitivamente.' }
+
+    /certifications:
+        get:
+            tags: [Certifications]
+            summary: Listar certificaciones (público)
+            responses:
+                '200':
+                    description: Certificaciones obtenidas.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items:
+                                                  $ref: '#/components/schemas/CertificationEntity'
+        post:
+            tags: [Certifications]
+            summary: Crear certificación (admin)
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateCertificationDto'
+            responses:
+                '201': { description: Certificación creada. }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /certifications/{id}:
+        patch:
+            tags: [Certifications]
+            summary: Actualizar certificación (admin)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Certificación actualizada. }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [Certifications]
+            summary: Enviar certificación a la papelera (admin, soft delete)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Certificación movida a la papelera. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /certifications/admin/trash:
+        get:
+            tags: [Certifications]
+            summary: Papelera de certificaciones (admin)
+            security: [{ cookieAuth: [] }]
+            responses:
+                '200':
+                    description: Certificaciones borradas (soft delete).
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data: { type: array, items: { $ref: '#/components/schemas/CertificationEntity' } }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /certifications/{id}/restore:
+        post:
+            tags: [Certifications]
+            summary: Restaurar una certificación de la papelera (admin)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Certificación restaurada. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { description: La certificación no está en la papelera. }
+    /certifications/{id}/permanent:
+        delete:
+            tags: [Certifications]
+            summary: Eliminar una certificación definitivamente (admin; borra también el logo y el PDF del almacenamiento)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Certificación eliminada definitivamente. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { description: 'El registro no está en la papelera: hay que enviarlo ahí antes de eliminarlo definitivamente.' }
+
+    /clients:
+        get:
+            tags: [Clients]
+            summary: Listar clientes activos (público, sección del index)
+            responses:
+                '200':
+                    description: Clientes obtenidos.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items:
+                                                  $ref: '#/components/schemas/ClientEntity'
+        post:
+            tags: [Clients]
+            summary: Crear cliente (admin)
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateClientDto'
+            responses:
+                '201': { description: Cliente creado. }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /clients/admin:
+        get:
+            tags: [Clients]
+            summary: Listar todos los clientes, incluidos inactivos (admin)
+            security: [{ cookieAuth: [] }]
+            responses:
+                '200': { description: Clientes obtenidos. }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /clients/{id}:
+        patch:
+            tags: [Clients]
+            summary: Actualizar cliente (admin)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Cliente actualizado. }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [Clients]
+            summary: Enviar cliente a la papelera (admin, soft delete)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Cliente movido a la papelera. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /clients/admin/trash:
+        get:
+            tags: [Clients]
+            summary: Papelera de clientes (admin)
+            security: [{ cookieAuth: [] }]
+            responses:
+                '200':
+                    description: Clientes borrados (soft delete), URLs absolutas.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data: { type: array, items: { $ref: '#/components/schemas/ClientEntity' } }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /clients/{id}/restore:
+        post:
+            tags: [Clients]
+            summary: Restaurar un cliente de la papelera (admin)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Cliente restaurado. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { description: El cliente no está en la papelera. }
+    /clients/{id}/permanent:
+        delete:
+            tags: [Clients]
+            summary: Eliminar un cliente definitivamente (admin; borra también el logo del almacenamiento)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Cliente eliminado definitivamente. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { description: 'El registro no está en la papelera: hay que enviarlo ahí antes de eliminarlo definitivamente.' }
+
+    /news:
+        get:
+            tags: [News]
+            summary: Listar notas publicadas (público, paginado)
+            parameters:
+                - { in: query, name: category, schema: { type: string, enum: [novedades, prensa] } }
+                - { in: query, name: featured, schema: { type: boolean } }
+                - { in: query, name: page, schema: { type: integer, minimum: 1, default: 1 } }
+                - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 10 } }
+            responses:
+                '200':
+                    description: Notas publicadas, orden publishedAt DESC, con meta de paginación.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items:
+                                                  $ref: '#/components/schemas/NewsPostEntity'
+                                          meta:
+                                              $ref: '#/components/schemas/PaginationMeta'
+        post:
+            tags: [News]
+            summary: Crear nota (admin o rrhh)
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateNewsPostDto'
+            responses:
+                '201': { description: Nota creada. }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/UniqueConflict' }
+
+    /news/admin:
+        get:
+            tags: [News]
+            summary: Listar notas incluyendo borradores (admin o rrhh, paginado)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: query, name: category, schema: { type: string, enum: [novedades, prensa] } }
+                - { in: query, name: featured, schema: { type: boolean } }
+                - { in: query, name: published, schema: { type: boolean } }
+                - { in: query, name: page, schema: { type: integer } }
+                - { in: query, name: limit, schema: { type: integer } }
+            responses:
+                '200': { description: Notas obtenidas. }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /news/admin/{id}:
+        get:
+            tags: [News]
+            summary: Obtener una nota por id para edición (admin o rrhh)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Nota obtenida. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /news/{slug}:
+        get:
+            tags: [News]
+            summary: Obtener una nota publicada por slug (público)
+            parameters:
+                - { in: path, name: slug, required: true, schema: { type: string } }
+            responses:
+                '200': { description: Nota obtenida. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /news/{id}:
+        patch:
+            tags: [News]
+            summary: Actualizar nota (admin o rrhh)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Nota actualizada. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { $ref: '#/components/responses/UniqueConflict' }
+        delete:
+            tags: [News]
+            summary: Enviar nota a la papelera (admin o rrhh, soft delete)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Nota movida a la papelera. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /news/admin/trash:
+        get:
+            tags: [News]
+            summary: Papelera de novedades (admin o rrhh)
+            security: [{ cookieAuth: [] }]
+            responses:
+                '200':
+                    description: Notas borradas (soft delete), URLs absolutas.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data: { type: array, items: { $ref: '#/components/schemas/NewsPostEntity' } }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /news/{id}/restore:
+        post:
+            tags: [News]
+            summary: Restaurar una nota de la papelera (admin o rrhh)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Nota restaurada. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: >
+                        Sin `conflict`: la nota no está en la papelera. Con
+                        `conflict` (inTrash:false): otra nota activa ya usa ese slug
+                        (defensivo — la papelera reserva el slug).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/UniqueConflictErrorResponse'
+    /news/{id}/permanent:
+        delete:
+            tags: [News]
+            summary: Eliminar una nota definitivamente (admin o rrhh; borra también la portada del almacenamiento)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Nota eliminada definitivamente. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { description: 'El registro no está en la papelera: hay que enviarlo ahí antes de eliminarlo definitivamente.' }
+
+    /news/linkedin/sync:
+        post:
+            tags: [News]
+            summary: Sincronizar posteos de LinkedIn a la cola (admin o rrhh)
+            description: >-
+                Trae los posteos recientes de la página de LinkedIn y agrega los
+                nuevos como candidatos pendientes. Con LINKEDIN_FETCH_MODE=stub usa
+                posteos de ejemplo; con 'api' llama a la Community Management API real
+                (requiere credenciales aprobadas). El dedupe por externalId evita
+                reimportar lo ya procesado.
+            security: [{ cookieAuth: [] }]
+            responses:
+                '201':
+                    description: Sincronización completada.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: object
+                                              properties:
+                                                  fetched: { type: integer, description: Posteos traídos de la fuente }
+                                                  created: { type: integer, description: Nuevos agregados a la cola }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '503': { description: LinkedIn no configurado o sin responder (solo modo 'api'). }
+
+    /news/linkedin/imports:
+        get:
+            tags: [News]
+            summary: Cola de curaduría de LinkedIn (admin o rrhh, paginado)
+            description: Por defecto lista los candidatos pendientes de aprobación.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: query, name: status, schema: { type: string, enum: [pending, approved, rejected] } }
+                - { in: query, name: page, schema: { type: integer, minimum: 1, default: 1 } }
+                - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 10 } }
+            responses:
+                '200':
+                    description: Candidatos, con meta de paginación.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items:
+                                                  $ref: '#/components/schemas/LinkedInImportEntity'
+                                          meta:
+                                              $ref: '#/components/schemas/PaginationMeta'
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /news/linkedin/imports/{id}/approve:
+        post:
+            tags: [News]
+            summary: Aprobar y publicar un posteo de LinkedIn (admin o rrhh)
+            description: >-
+                Crea y publica una nota (news_posts) copiando el contenido del posteo,
+                descargando la imagen al almacenamiento, y marca el candidato como aprobado. Devuelve
+                la nota creada.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/ApproveLinkedInImportDto'
+            responses:
+                '201':
+                    description: Nota creada y publicada.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              $ref: '#/components/schemas/NewsPostEntity'
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: >
+                        Único 409 de este endpoint: el candidato ya fue procesado
+                        (aprobado o rechazado). Un slug derivado duplicado NO da
+                        409: se le agrega sufijo automáticamente (titulo-2,
+                        titulo-3...). No trae `conflict`.
+
+    /news/linkedin/imports/{id}/reject:
+        post:
+            tags: [News]
+            summary: Rechazar un posteo de LinkedIn (admin o rrhh)
+            description: Marca el candidato como rechazado; no se publica y no vuelve a la cola.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '201':
+                    description: Candidato rechazado.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              $ref: '#/components/schemas/LinkedInImportEntity'
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { description: El candidato ya fue procesado. }
+
+    /recruitment/job-profiles:
+        get:
+            tags: [Recruitment]
+            summary: Puestos disponibles (público, alimenta el formulario)
+            description: >
+                PUENTE hacia Gestión Petrogas, que es donde RRHH administra los
+                puestos. Este endpoint reenvía la consulta agregando el token,
+                que no puede viajar al navegador. El sitio ya no tiene catálogo
+                propio de puestos ni pantalla para administrarlos.
+
+                OJO: los `id` son NUMÉRICOS (vienen de Gestión), no UUID.
+            responses:
+                '200':
+                    description: Puestos obtenidos.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items:
+                                                  type: object
+                                                  properties:
+                                                      id: { type: integer, example: 24 }
+                                                      name: { type: string, example: Maestranza }
+                '502':
+                    description: Gestión respondió con un error.
+                '503':
+                    description: No se pudo contactar a Gestión.
+
+    /recruitment/degree-titles:
+        get:
+            tags: [Recruitment]
+            summary: Listar títulos activos (público, alimenta el autocompletado)
+            description: >
+                Catálogo propio de títulos educativos (snapshot, no se consume
+                ninguna API externa en runtime). El formulario lo usa como
+                autocompletado; si el postulante no encuentra el suyo, puede
+                escribirlo libre en `degreeTitleOther`.
+            parameters:
+                - in: query
+                  name: level
+                  schema:
+                      type: string
+                      enum: [primario, secundario, secundario_tecnico, terciario, universitario, formacion_profesional]
+            responses:
+                '200':
+                    description: Títulos obtenidos.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items:
+                                                  $ref: '#/components/schemas/DegreeTitleEntity'
+        post:
+            tags: [Recruitment]
+            summary: Crear título en el catálogo (admin o rrhh)
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateDegreeTitleDto'
+            responses:
+                '201': { description: Título creado. }
+                '409': { $ref: '#/components/responses/UniqueConflict' }
+
+    /recruitment/degree-titles/admin:
+        get:
+            tags: [Recruitment]
+            summary: Listar títulos incluidos inactivos (admin o rrhh, paginado)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: query, name: level, schema: { type: string, enum: [primario, secundario, secundario_tecnico, terciario, universitario, formacion_profesional] } }
+                - { in: query, name: search, schema: { type: string, maxLength: 150 }, description: Busca por nombre (parcial) }
+                - { in: query, name: page, schema: { type: integer } }
+                - { in: query, name: limit, schema: { type: integer } }
+            responses:
+                '200':
+                    description: Títulos obtenidos (con meta de paginación).
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items: { $ref: '#/components/schemas/DegreeTitleEntity' }
+                                          meta: { $ref: '#/components/schemas/PaginationMeta' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /recruitment/degree-titles/{id}:
+        patch:
+            tags: [Recruitment]
+            summary: Actualizar título (admin o rrhh). Recomendado desactivar en lugar de borrar.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Título actualizado. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { $ref: '#/components/responses/UniqueConflict' }
+        delete:
+            tags: [Recruitment]
+            summary: Enviar título a la papelera (admin o rrhh, soft delete)
+            description: Mientras está en la papelera, las postulaciones conservan su referencia al título.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Título movido a la papelera. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /recruitment/degree-titles/admin/trash:
+        get:
+            tags: [Recruitment]
+            summary: Papelera de títulos (admin o rrhh)
+            security: [{ cookieAuth: [] }]
+            responses:
+                '200':
+                    description: Títulos borrados (soft delete).
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data: { type: array, items: { $ref: '#/components/schemas/DegreeTitleEntity' } }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+    /recruitment/degree-titles/{id}/restore:
+        post:
+            tags: [Recruitment]
+            summary: Restaurar un título de la papelera (admin o rrhh)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Título restaurado. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: >
+                        Sin `conflict`: el título no está en la papelera. Con
+                        `conflict` (inTrash:false): otro título activo ya usa ese
+                        nombre (defensivo — la papelera reserva el nombre).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/UniqueConflictErrorResponse'
+    /recruitment/degree-titles/{id}/permanent:
+        delete:
+            tags: [Recruitment]
+            summary: Eliminar un título definitivamente (admin o rrhh)
+            description: >-
+                El título tiene que estar en la papelera: el borrado definitivo
+                es la salida de la papelera, así que exige haber entrado. Las
+                postulaciones ya no se guardan acá (van a Gestión Petrogas), así
+                que nada más lo referencia.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Título eliminado definitivamente. }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { description: 'El registro no está en la papelera: hay que enviarlo ahí antes de eliminarlo definitivamente.' }
+
+    /recruitment/applications:
+        post:
+            tags: [Recruitment]
+            summary: Enviar postulación (público, multipart, 20/min por IP)
+            description: >
+                Formulario público "Trabajá con nosotros". Es un PUENTE hacia
+                Gestión Petrogas: el sitio NO guarda la postulación ni el CV,
+                los reenvía en el mismo request y no queda copia de este lado.
+
+                Las reglas de validación las define Gestión y no se duplican
+                acá, para que no se desfasen. Sus rechazos vuelven como 422 con
+                el detalle por campo, listo para marcar cada input del
+                formulario.
+
+                Título académico: se manda `degreeTitleId` JUNTO CON
+                `degreeTitleName` (Gestión guarda el nombre porque el catálogo
+                lo mantiene el sitio), o bien `degreeTitleOther` para el texto
+                libre. Nunca las dos opciones a la vez.
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            required: [fullName, email, phone, location, jobProfileIds, cv]
+                            properties:
+                                fullName: { type: string, minLength: 5, maxLength: 120 }
+                                email: { type: string, maxLength: 254 }
+                                phone: { type: string, maxLength: 30 }
+                                location: { type: string, maxLength: 120, description: Localidad }
+                                degreeTitleId:
+                                    type: string
+                                    format: uuid
+                                    description: Id del catálogo propio. Va acompañado de degreeTitleName.
+                                degreeTitleName:
+                                    type: string
+                                    description: Nombre del título elegido; acompaña a degreeTitleId.
+                                degreeTitleOther:
+                                    type: string
+                                    maxLength: 150
+                                    description: Título escrito a mano. Excluyente con el par anterior.
+                                jobProfileIds:
+                                    type: array
+                                    items: { type: integer }
+                                    description: Ids NUMÉRICOS obtenidos de GET /recruitment/job-positions.
+                                cv:
+                                    type: string
+                                    format: binary
+                                    description: >-
+                                        PDF real, máximo 5 MB. Se verifica por
+                                        sus bytes (magic bytes), no por la
+                                        extensión ni el Content-Type declarado,
+                                        y se rechaza si trae contenido activo.
+            responses:
+                '201':
+                    description: Postulación recibida por Gestión.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: object
+                                              properties:
+                                                  id: { type: integer, example: 2 }
+                                                  status: { type: string, example: received }
+                '400':
+                    description: >-
+                        Falta el archivo `cv`, o el formulario superó los límites
+                        del multipart (demasiados campos o partes).
+                '413':
+                    description: El CV excede los 5 MB.
+                '422':
+                    description: >
+                        Los datos no pasaron la validación. El cuerpo trae
+                        `message` con el resumen y `errors` con el detalle por
+                        campo.
+
+                        Casi todas las reglas las aplica Gestión, pero el sitio
+                        verifica tres cosas antes de reenviar y las rechaza con
+                        la MISMA forma, así que el cliente no necesita
+                        distinguirlas: que el `cv` sea un PDF real (por sus
+                        bytes, no por la extensión), que no traiga contenido
+                        activo (JavaScript o adjuntos), y que no se elijan más
+                        de 3 puestos.
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    message: { type: string }
+                                    errors:
+                                        type: object
+                                        additionalProperties:
+                                            type: array
+                                            items: { type: string }
+                                example:
+                                    message: 'Debe seleccionar un titulo academico del catalogo o cargar uno manualmente.'
+                                    errors:
+                                        cv: ['El CV debe ser un PDF.']
+                                        degreeTitleId: ['Debe seleccionar un titulo academico del catalogo o cargar uno manualmente.']
+                '429': { $ref: '#/components/responses/TooManyRequests' }
+                '502':
+                    description: Gestión respondió con un error.
+                '503':
+                    description: No se pudo contactar a Gestión.
+
+
+
+    /change-log:
+        get:
+            tags: [ChangeLog]
+            summary: Listar el registro de cambios (admin o auditor)
+            description: >-
+                Cada asiento dice qué se tocó, quién y cuándo, y bajo qué
+                revisión del sitio. Los `details` traen el campo a campo: cuando
+                viene `summary` es porque no se guardan los valores (campos
+                largos y archivos).
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: query, name: page, schema: { type: integer, minimum: 1, default: 1 } }
+                - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+                - { in: query, name: from, schema: { type: string, format: date }, description: Desde esta fecha inclusive. }
+                - { in: query, name: to, schema: { type: string, format: date }, description: Hasta esta fecha inclusive. }
+                - { in: query, name: entityType, schema: { type: string }, description: 'servicio, certificacion, cliente, novedad, titulo, configuracion, imagen-del-sitio' }
+                - { in: query, name: action, schema: { type: string, enum: [creacion, modificacion, baja, restauracion, eliminacion] } }
+            responses:
+                '200':
+                    description: Registro paginado, del más reciente al más viejo.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: array
+                                              items: { $ref: '#/components/schemas/ChangeLogEntry' }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /change-log/export:
+        get:
+            tags: [ChangeLog]
+            summary: Exportar el registro a Excel (admin o auditor)
+            description: >-
+                Devuelve un .xlsx con una fila por campo cambiado. Mismos
+                filtros que el listado, sin paginar. El nombre del archivo viaja
+                en el Content-Disposition.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: query, name: from, schema: { type: string, format: date } }
+                - { in: query, name: to, schema: { type: string, format: date } }
+                - { in: query, name: entityType, schema: { type: string } }
+                - { in: query, name: action, schema: { type: string, enum: [creacion, modificacion, baja, restauracion, eliminacion] } }
+            responses:
+                '200':
+                    description: La planilla.
+                    content:
+                        application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+                            schema: { type: string, format: binary }
+                '400':
+                    description: >-
+                        El rango seleccionado supera las 50.000 filas
+                        exportables; hay que acotarlo.
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /contact:
+        post:
+            tags: [Contact]
+            summary: Enviar mensaje de contacto (público, 5/min por IP)
+            description: >
+                Persiste el mensaje SIEMPRE (queda en el panel) y notifica por
+                email al buzón de la empresa de forma best-effort.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/CreateContactMessageDto'
+            responses:
+                '201':
+                    description: Mensaje enviado.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: object
+                                              properties:
+                                                  id: { type: string, format: uuid }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '429': { $ref: '#/components/responses/TooManyRequests' }
+
+    /contact/messages:
+        get:
+            tags: [Contact]
+            summary: Listar mensajes de contacto (admin, paginado)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: query, name: status, schema: { type: string, enum: [nueva, leida] } }
+                - { in: query, name: page, schema: { type: integer } }
+                - { in: query, name: limit, schema: { type: integer } }
+            responses:
+                '200': { description: Mensajes obtenidos. }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /contact/messages/{id}:
+        patch:
+            tags: [Contact]
+            summary: Actualizar estado de un mensaje (admin)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Mensaje actualizado. }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [Contact]
+            summary: Eliminar mensaje (admin)
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+            responses:
+                '200': { description: Mensaje eliminado. }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /media/uploads:
+        post:
+            tags: [Media]
+            summary: Subir imagen de contenido (admin o rrhh)
+            description: >
+                Multipart con el archivo en el campo `file`. PNG/JPEG/WebP
+                reales (magic bytes; SVG prohibido), máx 4 MB. Devuelve la key
+                (para guardar en la entidad) y la URL pública.
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            required: [file]
+                            properties:
+                                file:
+                                    type: string
+                                    format: binary
+            responses:
+                '201':
+                    description: Imagen subida.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: object
+                                              properties:
+                                                  key: { type: string, example: 'media/2026/07/uuid.png' }
+                                                  url: { type: string }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '413':
+                    description: La imagen excede los 4 MB.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                '429': { $ref: '#/components/responses/TooManyRequests' }
+        delete:
+            tags: [Media]
+            summary: Eliminar archivo público por key (admin; solo huérfanos)
+            description: >
+                Borra imágenes o PDFs del bucket público (comparten la prefix
+                `media/`). Solo borra archivos HUÉRFANOS: si alguna entidad lo
+                referencia responde 409. Se consultan las seis que guardan keys:
+                servicio, certificación, cliente, novedad, ajustes del sitio e
+                imágenes del sitio, incluidos los registros en la papelera.
+            security: [{ cookieAuth: [] }]
+            parameters:
+                - { in: query, name: key, required: true, schema: { type: string } }
+            responses:
+                '200': { description: Archivo eliminado. }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { description: El archivo está en uso por una entidad (o por un registro en la papelera). }
+
+    /media/documents:
+        post:
+            tags: [Media]
+            summary: Subir documento PDF público (admin o rrhh)
+            description: >
+                Multipart con el archivo en el campo `file`. **Solo PDF** real
+                (validado por magic bytes), máx 10 MB. Se guarda en el mismo
+                bucket público que las imágenes y devuelve la key (para guardar
+                en la entidad, p. ej. `certificatePdf`) y la URL pública directa
+                (no firmada). Endpoint aparte de `/media/uploads` para que ese
+                siga aceptando solo imágenes.
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            required: [file]
+                            properties:
+                                file:
+                                    type: string
+                                    format: binary
+            responses:
+                '201':
+                    description: Documento subido.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              type: object
+                                              properties:
+                                                  key: { type: string, example: 'media/2026/07/uuid.pdf' }
+                                                  url: { type: string }
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '413':
+                    description: El documento excede los 10 MB.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ErrorResponse'
+                '429': { $ref: '#/components/responses/TooManyRequests' }
+
+    /site-settings:
+        get:
+            tags: [SiteSettings]
+            summary: Configuración del sitio (público, cacheable; la consume el footer)
+            description: >-
+                Singleton sin :id. Si aún no se cargó nada, devuelve los campos
+                en null (nunca 404). Respuesta con Cache-Control public
+                max-age=300. certificationMarkImage llega como URL absoluta.
+            responses:
+                '200':
+                    description: Configuración actual.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              $ref: '#/components/schemas/SiteSettingsView'
+        patch:
+            tags: [SiteSettings]
+            summary: Actualizar la configuración del sitio (admin)
+            description: >-
+                Upsert del singleton. Semántica por campo — ausente: no se toca;
+                null: se limpia (y la imagen reemplazada se borra del storage);
+                string: se reemplaza. La imagen se sube antes por POST
+                /media/uploads y acá se manda la key.
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateSiteSettingsDto'
+            responses:
+                '200':
+                    description: Configuración actualizada (misma forma que el GET).
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              $ref: '#/components/schemas/SiteSettingsView'
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /site-settings/images:
+        get:
+            tags: [SiteSettings]
+            summary: Imágenes de cabecera de las páginas fijas (público, cacheable)
+            description: >-
+                Mapa `slot -> URL absoluta` de los banners y fotos editables del
+                sitio. Solo aparecen los slots CON imagen cargada; si no hay
+                ninguna, devuelve un objeto vacío (nunca 404) y el frontend usa
+                la imagen por defecto de su código. Cache-Control public
+                max-age=300, igual que /site-settings.
+            responses:
+                '200':
+                    description: Slots con imagen cargada.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              $ref: '#/components/schemas/SiteImagesView'
+        patch:
+            tags: [SiteSettings]
+            summary: Asignar o limpiar la imagen de un slot (admin)
+            description: >-
+                Upsert de un slot. `imageKey` con una key la asigna o reemplaza;
+                `imageKey` en null (o ausente) limpia el slot. Al reemplazar o
+                limpiar, la imagen anterior se borra del storage. La imagen se
+                sube antes por POST /media/uploads y acá se manda la key.
+                Devuelve el mapa completo ya actualizado.
+            security: [{ cookieAuth: [] }]
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UpdateSiteImageDto'
+            responses:
+                '200':
+                    description: Mapa de imágenes actualizado.
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/SuccessEnvelope'
+                                    - type: object
+                                      properties:
+                                          data:
+                                              $ref: '#/components/schemas/SiteImagesView'
+                '400': { $ref: '#/components/responses/ValidationError' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
 
 components:
     securitySchemes:
@@ -383,10 +1841,20 @@ components:
                 application/json:
                     schema:
                         $ref: '#/components/schemas/ErrorResponse'
+        UniqueConflict:
+            description: >
+                Conflicto por valor único (slug/name) ya tomado. El cuerpo agrega
+                `conflict` con el registro que lo retiene y si está en la papelera,
+                para poder ofrecer restaurarlo o eliminarlo definitivamente.
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/UniqueConflictErrorResponse'
         TooManyRequests:
             description: >
                 Límite de peticiones excedido (global: 100/min por IP; endpoints
-                de auth: 10/min; forgot-password: 3/min).
+                de auth: 10/min; forgot-password: 3/min; contacto: 5/min;
+                postulaciones: 20/min).
             content:
                 application/json:
                     schema:
@@ -447,6 +1915,86 @@ components:
                 timestamp: { type: string, format: date-time }
                 path: { type: string, example: '/api/auth/activate' }
 
+        UniqueConflictInfo:
+            type: object
+            description: >
+                Registro que ya usa el valor único en conflicto. Permite al panel
+                ofrecer la solución en el momento sin tener que buscarlo.
+            properties:
+                id: { type: string, format: uuid, description: Id del registro que retiene el valor }
+                field: { type: string, enum: [slug, name] }
+                value: { type: string, example: 'conflicto-sd' }
+                inTrash:
+                    type: boolean
+                    description: >
+                        true = el bloqueante está en la papelera; con su id se puede
+                        ofrecer POST /<recurso>/{id}/restore o
+                        DELETE /<recurso>/{id}/permanent para liberar el valor.
+
+        SiteSettingsView:
+            type: object
+            description: Configuración global del sitio (singleton). Campos en null si aún no se cargaron.
+            properties:
+                certificationMarkImage:
+                    type: string
+                    nullable: true
+                    description: URL absoluta de la marca de certificación de Bureau Veritas del footer (una sola imagen que lista todas las normas)
+                certificationScopeText:
+                    type: string
+                    nullable: true
+                    description: Alcance de la certificación, a mostrar JUNTO a la marca (requisito del manual de BV cuando el alcance es parcial; no esconder detrás de un clic)
+
+        SiteImagesView:
+            type: object
+            description: >-
+                Mapa slot -> URL absoluta. Los slots sin imagen cargada NO
+                aparecen. El backend no mantiene un catálogo cerrado de slots:
+                agregar una página nueva es insertar una fila desde el panel,
+                sin migración.
+            additionalProperties: { type: string, format: uri }
+            example:
+                banner-nosotros: 'https://cdn.petrogassa.com/media/2026/07/nosotros.webp'
+                banner-rrhh: 'https://cdn.petrogassa.com/media/2026/07/rrhh.webp'
+                home-hero: 'https://cdn.petrogassa.com/media/2026/07/hero.webp'
+
+        UpdateSiteImageDto:
+            type: object
+            required: [slot]
+            properties:
+                slot:
+                    type: string
+                    maxLength: 60
+                    pattern: '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+                    description: >-
+                        Identificador del lugar, en kebab-case. En uso hoy:
+                        banner-nosotros, banner-servicios, banner-certificaciones,
+                        banner-rrhh (compartido por /rrhh y /trabaja-con-nosotros),
+                        banner-novedades, banner-contacto, home-hero, home-empresa.
+                    example: banner-nosotros
+                imageKey:
+                    type: string
+                    nullable: true
+                    maxLength: 500
+                    description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400. null (o ausente) limpia el slot.'
+
+        UpdateSiteSettingsDto:
+            type: object
+            description: 'Por campo: ausente = no se toca; null = se limpia; string = se reemplaza.'
+            properties:
+                certificationMarkImage: { type: string, nullable: true, maxLength: 500, description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400. null limpia la marca.' }
+                certificationScopeText: { type: string, nullable: true, maxLength: 1000 }
+
+        UniqueConflictErrorResponse:
+            description: >
+                Sobre de error estándar + `conflict`. Ese campo SOLO aparece en los
+                409 por valor único ya tomado; el resto de los errores conserva el
+                cuerpo de ErrorResponse.
+            allOf:
+                - $ref: '#/components/schemas/ErrorResponse'
+                - type: object
+                  properties:
+                      conflict: { $ref: '#/components/schemas/UniqueConflictInfo' }
+
         InviteUserDto:
             type: object
             required: [email]
@@ -459,11 +2007,11 @@ components:
                     example: 'juan.perez@example.com'
                 roles:
                     type: array
-                    description: Opcional. Por defecto ['user']. El admin puede asignar 'admin'.
+                    description: Opcional. Por defecto ['user']. El admin puede asignar 'admin' o 'rrhh'.
                     items:
                         type: string
-                        enum: [user, admin]
-                    example: ['user']
+                        enum: [user, admin, rrhh]
+                    example: ['rrhh']
 
         ActivateAccountDto:
             type: object
@@ -556,6 +2104,16 @@ components:
                 - $ref: '#/components/schemas/PublicUser'
                 - type: object
                   properties:
+                      status:
+                          type: string
+                          enum: [pendiente, activo, desactivado]
+                          example: activo
+                          description: >
+                              Estado derivado, calculado por el backend a partir
+                              de isActive y de si la cuenta ya definió contraseña.
+                              Usalo tal cual: no lo deduzcas de isActive, que vale
+                              false tanto para una invitación sin aceptar como
+                              para una cuenta dada de baja.
                       name:
                           type: string
                           nullable: true
@@ -574,7 +2132,7 @@ components:
                           type: array
                           items:
                               type: string
-                              enum: [user, admin]
+                              enum: [user, admin, rrhh]
                           example: ['user']
                       createdAt:
                           type: string
@@ -582,3 +2140,251 @@ components:
                       updatedAt:
                           type: string
                           format: date-time
+
+        ServiceItemEntity:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                label: { type: string, example: 'Mantenimiento Mecánico' }
+                spec: { type: string, nullable: true, example: '1440 ASME' }
+                icon: { type: string, nullable: true, example: 'pickup' }
+                sortOrder: { type: integer }
+
+        ServiceEntity:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                title: { type: string, example: 'Operación y Mantenimiento' }
+                slug: { type: string, example: 'operacion-y-mantenimiento' }
+                shortDescription: { type: string }
+                longDescription: { type: string }
+                cardImage: { type: string, nullable: true, description: URL absoluta }
+                bannerImage: { type: string, nullable: true, description: URL absoluta }
+                detailImage: { type: string, nullable: true, description: URL absoluta }
+                itemsLayout: { type: string, enum: [bullets, icons, numbered] }
+                sortOrder: { type: integer }
+                isActive: { type: boolean }
+                items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ServiceItemEntity' }
+                deletedAt: { type: string, format: date-time, nullable: true, description: 'En la papelera si no es null (solo aparece en /admin/trash)' }
+
+        CreateServiceDto:
+            type: object
+            required: [title, shortDescription, longDescription]
+            properties:
+                title: { type: string, maxLength: 120 }
+                slug: { type: string, maxLength: 140, description: 'Opcional. Al crear: se genera del título. Al editar: si no se envía SE CONSERVA (cambiar el título no cambia la URL)' }
+                shortDescription: { type: string, maxLength: 500 }
+                longDescription: { type: string, maxLength: 10000 }
+                cardImage: { type: string, description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400.' }
+                bannerImage: { type: string, description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400.' }
+                detailImage: { type: string, description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400.' }
+                itemsLayout: { type: string, enum: [bullets, icons, numbered] }
+                sortOrder: { type: integer }
+                isActive: { type: boolean }
+                items:
+                    type: array
+                    description: En PATCH, reemplaza la lista completa.
+                    items:
+                        type: object
+                        required: [label]
+                        properties:
+                            label: { type: string, maxLength: 200 }
+                            spec: { type: string, maxLength: 200 }
+                            icon: { type: string, maxLength: 50 }
+                            sortOrder: { type: integer }
+
+        CertificationEntity:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                title: { type: string, example: 'ISO 9001:2015' }
+                subtitle: { type: string, example: 'Calidad' }
+                description: { type: string }
+                isFeatured: { type: boolean }
+                logoImage: { type: string, nullable: true, description: URL absoluta }
+                certificatePdf:
+                    type: string
+                    nullable: true
+                    description: URL absoluta pública del certificado en PDF (null si no se cargó). El sitio muestra "Ver / Descargar certificado" cuando no es null.
+                sortOrder: { type: integer }
+                deletedAt: { type: string, format: date-time, nullable: true, description: 'En la papelera si no es null' }
+
+        CreateCertificationDto:
+            type: object
+            required: [title, subtitle, description]
+            properties:
+                title: { type: string, maxLength: 120 }
+                subtitle: { type: string, maxLength: 120 }
+                description: { type: string, maxLength: 2000 }
+                isFeatured: { type: boolean }
+                logoImage: { type: string, description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400.' }
+                certificatePdf: { type: string, description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400.' }
+                sortOrder: { type: integer }
+
+        ClientEntity:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                name: { type: string, example: 'YPF' }
+                logoImage: { type: string, description: URL absoluta }
+                sortOrder: { type: integer }
+                isActive: { type: boolean }
+                deletedAt: { type: string, format: date-time, nullable: true, description: 'En la papelera si no es null' }
+
+        CreateClientDto:
+            type: object
+            required: [name, logoImage]
+            properties:
+                name: { type: string, maxLength: 120 }
+                logoImage: { type: string, description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400.' }
+                sortOrder: { type: integer }
+                isActive: { type: boolean }
+
+        NewsPostEntity:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                title: { type: string }
+                slug: { type: string }
+                category: { type: string, enum: [novedades, prensa] }
+                publishedAt: { type: string, format: date-time, nullable: true }
+                coverImage: { type: string, nullable: true, description: URL absoluta }
+                excerpt: { type: string }
+                body: { type: string }
+                isFeatured: { type: boolean, description: 'ÚNICA: a lo sumo una nota destacada a la vez (lo garantiza el backend)' }
+                isPublished: { type: boolean }
+                source: { type: string, enum: [manual, linkedin], description: Origen de la nota }
+                externalUrl: { type: string, nullable: true, description: URL del post original en LinkedIn (si fue importada) }
+                deletedAt: { type: string, format: date-time, nullable: true, description: 'En la papelera si no es null' }
+
+        CreateNewsPostDto:
+            type: object
+            required: [title, category, excerpt, body]
+            properties:
+                title: { type: string, maxLength: 200 }
+                slug: { type: string, maxLength: 220, description: 'Opcional; "admin" está reservado. Al crear: se genera del título. Al editar: si no se envía SE CONSERVA (cambiar el título no cambia la URL)' }
+                category: { type: string, enum: [novedades, prensa] }
+                publishedAt: { type: string, format: date-time, description: Si falta al publicar, se usa la fecha actual }
+                coverImage: { type: string, description: 'Key de media (media/AAAA/MM/uuid.ext). Se acepta también la URL absoluta que devuelve el GET: se normaliza a key. Cualquier otro valor da 400.' }
+                excerpt: { type: string, maxLength: 500 }
+                body: { type: string }
+                isFeatured: { type: boolean, description: 'true des-marca automáticamente la destacada anterior (atómico; una sola destacada). false siempre es válido (cero destacadas permitido)' }
+                isPublished: { type: boolean, description: false = borrador }
+                externalUrl: { type: string }
+
+        LinkedInImportEntity:
+            type: object
+            description: Candidato de la bandeja de LinkedIn (staging; NO es contenido público).
+            properties:
+                id: { type: string, format: uuid }
+                externalId: { type: string, description: URN del post en LinkedIn }
+                status: { type: string, enum: [pending, approved, rejected] }
+                externalUrl: { type: string, description: Permalink al post en LinkedIn }
+                text: { type: string }
+                mediaUrl: { type: string, nullable: true, description: URL de la imagen del post (previsualización) }
+                authorName: { type: string, nullable: true }
+                postedAt: { type: string, format: date-time, nullable: true }
+                newsPostId: { type: string, format: uuid, nullable: true, description: Nota creada al aprobar }
+                reviewedAt: { type: string, format: date-time, nullable: true }
+
+        ApproveLinkedInImportDto:
+            type: object
+            required: [category]
+            properties:
+                category: { type: string, enum: [novedades, prensa], description: Catalogación (obligatoria) }
+                isFeatured: { type: boolean, description: 'true des-marca automáticamente la destacada anterior (una sola destacada)' }
+                title: { type: string, maxLength: 200, description: Opcional; si falta se deriva del texto }
+                excerpt: { type: string, maxLength: 500, description: Opcional; si falta se deriva del texto }
+
+        DegreeTitleEntity:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                name: { type: string, example: 'Técnico Mecánico' }
+                level:
+                    type: string
+                    enum: [primario, secundario, secundario_tecnico, terciario, universitario, formacion_profesional]
+                isActive: { type: boolean }
+                sortOrder: { type: integer }
+                deletedAt: { type: string, format: date-time, nullable: true, description: 'En la papelera si no es null' }
+
+        CreateDegreeTitleDto:
+            type: object
+            required: [name, level]
+            properties:
+                name: { type: string, maxLength: 150 }
+                level:
+                    type: string
+                    enum: [primario, secundario, secundario_tecnico, terciario, universitario, formacion_profesional]
+                isActive: { type: boolean }
+                sortOrder: { type: integer }
+
+        CreateContactMessageDto:
+            type: object
+            required: [name, email, message]
+            properties:
+                name: { type: string, maxLength: 100 }
+                email: { type: string, format: email }
+                phone: { type: string, maxLength: 30 }
+                subject: { type: string, maxLength: 150 }
+                message: { type: string, minLength: 10, maxLength: 5000 }
+                referencia:
+                    type: string
+                    maxLength: 200
+                    description: >-
+                        Campo TRAMPA (honeypot). El formulario debe incluirlo
+                        oculto (fuera de pantalla, tabindex="-1",
+                        autocomplete="off") y dejarlo SIEMPRE vacío: si llega
+                        con contenido, el mensaje se descarta en silencio y la
+                        respuesta es 201 igual, para no avisarle al bot.
+
+        ChangeLogEntry:
+            type: object
+            description: Un asiento del registro de cambios. Append-only.
+            properties:
+                id: { type: string, format: uuid }
+                occurredAt: { type: string, format: date-time }
+                revision: { type: string, example: '03', description: 'Revisión del sitio bajo la que cayó el cambio. Dos dígitos, sin punto; a los tres dígitos vuelve a 01 y la fecha es lo que desambigua.' }
+                entityType: { type: string, example: certificacion }
+                entityLabel:
+                    type: string
+                    example: 'ISO 9001:2015'
+                    description: >-
+                        Cómo se llamaba el registro CUANDO se lo tocó. Congelado
+                        a propósito: si después se renombra o se elimina, el
+                        asiento sigue diciendo de qué se trataba.
+                action: { type: string, enum: [creacion, modificacion, baja, restauracion, eliminacion] }
+                actorLabel:
+                    type: string
+                    example: 'Nicolás Espinoza <nicolas.espinoza@petrogassa.com>'
+                    description: Quién lo hizo. Sobrevive al borrado de esa cuenta.
+                details:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            fieldLabel: { type: string, example: Descripción }
+                            previousValue: { type: string, nullable: true }
+                            newValue: { type: string, nullable: true }
+                            summary:
+                                type: string
+                                nullable: true
+                                description: >-
+                                    Cuando viene, reemplaza a los valores: pasa
+                                    con los campos largos (solo se registra que
+                                    cambiaron) y con los archivos.
+                            valueKind: { type: string, enum: [texto, booleano, numero, fecha, archivo, lista] }
+
+        ContactMessageEntity:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+                email: { type: string }
+                phone: { type: string, nullable: true }
+                subject: { type: string, nullable: true }
+                message: { type: string }
+                status: { type: string, enum: [nueva, leida] }
+                createdAt: { type: string, format: date-time }

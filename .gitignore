@@ -2,6 +2,7 @@
 /dist
 /node_modules
 /build
+*.tsbuildinfo
 
 # Logs
 logs
@@ -66,3 +67,9 @@ skills/
 trae/
 .agents/
 skills-lock.json
+
+# Archivos subidos (almacenamiento en filesystem). En producción esta ruta
+# es un montaje NFS; en desarrollo es una carpeta local que no se versiona.
+/storage
+backups/
+REVISION.md

@@ -15,7 +15,10 @@ export default tseslint.config(
       ecmaVersion: 2020,
       globals: globals.node,
       parserOptions: {
-        project: true,
+        // tsconfig.json excluye test/ (tiene su propio rootDir vía
+        // test/jest-e2e.json para Jest); test/tsconfig.json lo cubre para
+        // que ESLint pueda tipar también app.e2e-spec.ts.
+        project: ['./tsconfig.json', './test/tsconfig.json'],
         tsconfigRootDir: import.meta.dirname,
       },
     },

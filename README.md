@@ -14,7 +14,7 @@ Backend de autenticación de la landing de **Petrogassa**, construido con [NestJ
 - **Autorización**: guard de roles (`@Auth(UserRoles.ADMIN)`) y protección contra IDOR (`GET /users/:id` solo permite el propio usuario o un admin).
 - **Endurecimiento HTTP**: `helmet`, `trust proxy` (para rate limiting correcto detrás de reverse proxy) y rate limiting **global** (`@nestjs/throttler`) con límites estrictos en los endpoints de auth.
 - **Respuestas estándar**: sobre uniforme `{ success, statusCode, message, data, meta? }` para éxitos y `{ success, statusCode, message, errors, timestamp, path }` para errores.
-- **Correos**: integración con [Resend](https://resend.com) para correos transaccionales (activación y reset).
+- **Correos**: proveedor **seleccionable por configuración** (`MAIL_PROVIDER`): [EnvíaloSimple Transaccional](https://envialosimple.com/es-int/transaccional) (por defecto) o [Resend](https://resend.com), detrás de un puerto `MailProvider`. Cambiar de proveedor es cambiar una variable de entorno, sin tocar código. Se usan para activación de cuenta, reset de contraseña y notificación del formulario de contacto.
 - **Base de datos**: PostgreSQL con TypeORM.
 - **Docker**: imagen multi-stage, usuario no-root, healthcheck, y configuración dev/prod separada.
 
@@ -93,58 +93,45 @@ Para omitir el envoltorio en un endpoint puntual, usá `@IgnoreResponseIntercept
 - **Node.js** v22+ (las imágenes Docker usan `node:24-alpine`).
 - **pnpm**: la versión está fijada en `package.json` (`packageManager`) y se activa con `corepack enable`.
 - **PostgreSQL** (local o contenedor Docker).
-- Una cuenta en [Resend](https://resend.com) para el envío de correos.
+- Una cuenta del proveedor de correo elegido: [EnvíaloSimple](https://envialosimple.com/es-int/transaccional) (por defecto) o [Resend](https://resend.com), con el dominio verificado.
 
 ## ⚙️ Configuración del entorno
 
 Las variables se validan estrictamente con `Joi` (`src/config/validation.schema.ts`): si falta alguna obligatoria, la app **no arranca**. Creá `.env.dev` y `.env.prod` en la raíz (ambos ya están en `.gitignore`).
 
-> **`JWT_SECRET` debe tener al menos 32 caracteres.** Generá uno único por entorno con:
-> ```bash
-> openssl rand -hex 32
-> ```
-
 ### `.env.dev` (desarrollo)
 
-```env
-NODE_ENV=development
-PROJECT_NAME=petrogassa-landing
-PORT=3000
+`.env.example` es la lista completa y comentada de las variables, y se mantiene
+sincronizada con el schema por un test (`validation.schema.spec.ts`). Copiala y
+completá los huecos:
 
-# JWT (mínimo 32 caracteres)
-JWT_SECRET=<openssl rand -hex 32>
-JWT_ACCESS_TOKEN_EXPIRES_IN=15m
-REFRESH_TOKEN_EXPIRES_IN_DAYS=7
-VERIFICATION_TOKEN_EXPIRES_IN_HOURS=1        # expiración del token de reset
-ACCOUNT_ACTIVATION_TOKEN_EXPIRES_IN_HOURS=48 # expiración del token de invitación
-
-# Base de datos
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_USER=postgres
-DATABASE_PASSWORD=postgres
-DATABASE_NAME=petrogassa_landing_dev
-
-# Puertos para Docker
-HOST_PORT=3000
-DATABASE_HOST_PORT=5432
-
-# Resend
-RESEND_API_KEY=
-RESEND_FROM_EMAIL=
-
-# URL del frontend, SIN barra final (CORS + enlaces de correos).
-# No puede ser el mismo puerto que el backend (PORT).
-FRONTEND_URL=http://localhost:5173
-
-# Email del admin inicial (se siembra al arrancar si no hay ningún admin).
-# NO hay contraseña de admin en env: la define él mismo al activar su cuenta.
-ADMIN_EMAIL=admin@petrogassa.com
+```bash
+cp .env.example .env.dev
 ```
+
+Lo que hay que completar a mano para desarrollo:
+
+| Variable | Qué poner |
+|---|---|
+| `JWT_SECRET` | `openssl rand -hex 32` (uno distinto por entorno) |
+| `ENVIALOSIMPLE_API_KEY` | La API key del dominio en EnvíaloSimple. Con `MAIL_PROVIDER=resend`, va `RESEND_API_KEY` en su lugar |
+| `MAIL_FROM_EMAIL` | Una casilla de un dominio verificado en el proveedor |
+| `ADMIN_EMAIL` | Tu casilla: ahí llega la invitación del admin inicial |
+| `CONTACT_INBOX_EMAIL` | Casilla que recibe los mensajes del formulario de contacto |
+| `GESTION_API_TOKEN` | El token que entrega Gestión Petrogas para el puente de postulaciones. **Es un secreto**: vive solo en el `.env`, nunca llega al frontend |
+| `DATABASE_*` | Credenciales de tu Postgres local o del contenedor |
+
+Las demás traen valores de desarrollo que funcionan tal cual. `LINKEDIN_FETCH_MODE=stub`
+usa posteos de ejemplo, así que las credenciales de LinkedIn pueden quedar vacías.
+
+> **`JWT_SECRET` debe tener al menos 32 caracteres.** Si falta alguna variable
+> obligatoria, Joi las lista **todas juntas** al arrancar, con su nombre.
 
 ### `.env.prod` (producción)
 
-Misma estructura, con `NODE_ENV=production`, un `JWT_SECRET` fuerte, credenciales de BD robustas, `DATABASE_HOST=db` (nombre del servicio en Docker) y un dominio verificado en `RESEND_FROM_EMAIL`. `RESEND_API_KEY`, `RESEND_FROM_EMAIL`, `FRONTEND_URL` y `ADMIN_EMAIL` son **obligatorias** (Joi bloquea el arranque si faltan).
+Misma estructura, con `NODE_ENV=production`, un `JWT_SECRET` fuerte, credenciales de BD robustas, `DATABASE_HOST=db` (nombre del servicio en Docker) y un dominio verificado en `MAIL_FROM_EMAIL`. `MAIL_FROM_EMAIL`, `FRONTEND_URL` y `ADMIN_EMAIL` son **obligatorias**, y la API key del proveedor activo también lo es **condicionalmente**: con `MAIL_PROVIDER=envialosimple` se exige `ENVIALOSIMPLE_API_KEY`; con `resend`, `RESEND_API_KEY`. Joi bloquea el arranque con un mensaje explícito si falta la que corresponde.
+
+**Cambiar de proveedor de correo:** poner `MAIL_PROVIDER=envialosimple` o `resend`, cargar su API key y reiniciar. El contenido de los correos y el resto del backend no cambian: cada proveedor es un adaptador del puerto `MailProvider` (`src/mail/providers/`). Nota: **solo Resend soporta claves de idempotencia**; con EnvíaloSimple ese campo se ignora (un reintento podría duplicar el correo).
 
 ## 👤 Admin inicial y alta de usuarios
 
@@ -161,15 +148,33 @@ No hay registro público. El acceso se gestiona así:
 
 ## 🚀 Ejecución en desarrollo
 
-Recomendado: la base de datos en Docker y el backend en tu máquina.
+Recomendado: base de datos en Docker, backend en tu máquina. Los archivos se guardan en la carpeta local que indique `STORAGE_PATH` (se crea sola; está en `.gitignore`).
 
 ```bash
-pnpm install                                   # corepack activa la versión pineada de pnpm
-docker compose --env-file .env.dev up -d db    # solo la BD
-pnpm start:dev                                 # backend en modo watch
+pnpm install                              # corepack activa la versión pineada de pnpm
+docker compose --env-file .env.dev up -d  # base de datos
+pnpm start:dev                            # backend en modo watch
 ```
 
-La API queda en `http://localhost:3000/api`. La documentación Swagger (solo fuera de producción) en `http://localhost:3000/api/docs`.
+La API queda en `http://localhost:3100/api`. La documentación Swagger (solo fuera de producción) en `http://localhost:3100/api/docs`.
+
+> El puerto es **3100**, no el 3000 habitual de Nest: en esta máquina conviven varios proyectos y el 3000 lo ocupa otro backend. Se define con `PORT` en el `.env`.
+
+## 🗄️ Almacenamiento de archivos (filesystem / NFS)
+
+Las imágenes del sitio se guardan **en disco**, no en un servicio externo. En producción esa ruta es un **montaje NFS** del servidor de archivos de la empresa; en desarrollo, una carpeta local que se crea sola.
+
+Debajo de `STORAGE_PATH` hay **una sola** carpeta, `public/`, con las imágenes y los PDFs del sitio (prefijo de key `media/`), y se publica entera por HTTP.
+
+**No hay área privada.** Todo lo que entra al almacenamiento es público por definición: `StorageService` no sabe escribir fuera de `public/`. Los CV de las postulaciones no tocan disco —van directo a Gestión Petrogas—, así que hoy no hace falta. Si mañana hay que guardar algo que no deba publicarse, requiere **código nuevo**, no elegir otro prefijo de key.
+
+- El backend sirve `public/` como estáticos con `Cache-Control: public, max-age=1y, immutable`. Es seguro cachear tan agresivo porque cada archivo tiene un nombre UUID irrepetible: al reemplazar una imagen cambia la key, así que **el contenido de una URL nunca cambia**.
+- `MEDIA_PUBLIC_BASE_URL` define la base de las URLs que se guardan/devuelven. Es **obligatoria y sin valor por defecto**: en producción tiene que apuntar al dominio real, o las entidades quedan guardando URLs a `localhost`. Normalmente es el propio backend; si mañana un **nginx o un CDN** sirven esa misma carpeta, se apunta esa variable ahí y **no hay que tocar código**.
+- Las keys en la base siguen con el mismo formato que tenían con S3 (`media/2026/07/<uuid>.webp`), así que el contenido ya cargado sigue siendo válido.
+- La escritura es **atómica** (archivo temporal + `rename`): un lector nunca ve un archivo a medio escribir, algo que importa en NFS donde la escritura puede ser lenta.
+- Las keys se validan contra **path traversal**: una key con `..` o una ruta absoluta no puede salir de la raíz pública. Es un riesgo propio del filesystem que con S3 no existía.
+
+**Al desplegar:** montar el NFS en el host y apuntar `HOST_STORAGE_PATH` a ese punto de montaje (`docker-compose.prod.yml` lo mapea dentro del contenedor en `STORAGE_PATH`). El contenedor corre como **usuario no root**, así que ese directorio tiene que permitirle escribir; si el export NFS usa `root_squash`, hay que contemplar el UID de la imagen. Y el volumen entra en el esquema de backups: ahí viven las imágenes del sitio.
 
 ## 📦 Ejecución en producción (Docker)
 
@@ -189,6 +194,21 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f backend
 
 > **Nota sobre el build:** `nest build` usa `tsconfig.build.json` (excluye `test/` y `*.spec.ts`), por lo que la salida es siempre `dist/main.js`, tanto localmente como en Docker. `pnpm start:prod` funciona en ambos casos.
 
+## 🗃️ Migraciones de base de datos
+
+`synchronize` de TypeORM solo está activo en **desarrollo**; en producción está apagado a propósito (nunca se auto-ajusta el esquema contra una base real). El esquema en producción se crea y actualiza **solo con migraciones**.
+
+**En producción es automático:** el `CMD` de la imagen (etapa `production` del Dockerfile) corre las migraciones pendientes antes de arrancar la app (`migration:run:prod && node dist/main.js`). Es idempotente —TypeORM registra en la tabla `migrations` cuáles ya se aplicaron— así que reiniciar o redesplegar el mismo contenedor no repite nada. Si una migración falla, el contenedor **no arranca la app** (evita correr contra un esquema a medio actualizar); revisá `docker compose logs backend`.
+
+**Al cambiar una entidad en desarrollo**, generá la migración correspondiente (compara las entidades contra el estado real de la base):
+
+```bash
+pnpm migration:generate src/database/migrations/NombreDescriptivo
+pnpm migration:run       # aplica en tu base de dev
+```
+
+Otros comandos: `pnpm migration:revert` (deshace la última), `pnpm migration:show` (lista aplicadas/pendientes), `pnpm migration:create <nombre>` (migración vacía para SQL manual, ej. backfills de datos). **Commiteá siempre el archivo de migración generado** junto con el cambio de entidad que lo motivó.
+
 ## 🛡️ Seguridad (resumen del template)
 
 - **Sin registro público**: alta solo por invitación de un admin; admin inicial sembrado sin contraseña en env.
@@ -204,6 +224,11 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f backend
 
 ## 🔌 Notas de integración (Frontend)
 
+> 📘 **Guía completa para el equipo de frontend: [`FRONTEND.md`](FRONTEND.md)** —
+> explica la finalidad del backend, la lógica de negocio, los flujos, las
+> convenciones (sobre de respuesta, cookies, paginación, errores), el mapa de
+> endpoints por pantalla y los formularios multipart. Lo de abajo es el resumen.
+
 Este proyecto entrega los tokens en cookies `HttpOnly`. Para que el frontend se autentique:
 
 1. `FRONTEND_URL` debe coincidir exactamente con la URL del cliente (para CORS con credenciales), **sin barra final**.
@@ -215,6 +240,75 @@ Este proyecto entrega los tokens en cookies `HttpOnly`. Para que el frontend se 
     - `/activate?token=...` → formulario de **nombre, apellido y contraseña**; llama a `POST /api/auth/activate` con `{ "token", "name", "surname", "password" }`.
     - `/reset-password?token=...` → formulario de nueva contraseña; llama a `POST /api/auth/reset-password` con `{ "token", "newPassword" }`.
 5. El alta de usuarios y el reenvío de invitaciones son acciones de **admin** (`POST /api/auth/users`, `POST /api/auth/users/:id/resend-activation`).
+
+## 🗂️ Contenido dinámico (CMS de la landing)
+
+El backend gestiona el contenido del sitio.
+
+> ℹ️ **Postulaciones: las maneja Gestión Petrogas.** El sitio expone el formulario "Trabajá con nosotros" en las mismas rutas de siempre, pero **no guarda nada**: reenvía la postulación y el CV a la API de Gestión (servidor a servidor, con `GESTION_API_TOKEN`) y no queda copia de este lado. Los **puestos** también salen de Gestión. El **catálogo de títulos académicos sí es del sitio** y RRHH lo administra desde el panel.
+ Roles: **admin** (todo) y **rrhh** (títulos académicos, novedades y subida de imágenes). Los endpoints `GET` de contenido son públicos; el CRUD requiere sesión.
+
+| Recurso | Endpoints clave | Quién |
+|---|---|---|
+| Servicios (+items) | `GET /api/services`, `GET /api/services/:slug` · CRUD | admin |
+| Certificaciones | `GET /api/certifications` · CRUD (con `certificatePdf` descargable) | admin |
+| Clientes (index) | `GET /api/clients` · CRUD | admin |
+| Novedades/Prensa | `GET /api/news` (paginado, filtros `category`/`featured`) · `GET /api/news/:slug` · CRUD + borradores · **curaduría LinkedIn** (`/api/news/linkedin/*`) · **destacada única** (marcar una des-marca la anterior, atómico) | admin, rrhh |
+| Puestos | `GET /api/recruitment/job-profiles` (público) — **puente a Gestión**, sin administración local | — |
+| Títulos (catálogo) | `GET /api/recruitment/degree-titles` (público, autocompletado) · CRUD + papelera | admin, rrhh |
+| Postulaciones | `POST /api/recruitment/applications` (público, multipart con CV) — **puente a Gestión**, no se guarda nada | — |
+| Contacto | `POST /api/contact` (público) · bandeja paginada | admin |
+| Media | `POST /api/media/uploads` (imágenes) · `POST /api/media/documents` (PDF público) → `{key, url}` | admin, rrhh |
+| Config del sitio | `GET /api/site-settings` (público, cacheable; marca de certificación BV del footer + texto de alcance) · `PATCH` (singleton, upsert) | admin |
+| Imágenes del sitio | `GET /api/site-settings/images` (público, cacheable; banners de cabecera de las páginas fijas y fotos del inicio, por **slot**) · `PATCH` (`{ slot, imageKey }`; null limpia) | admin |
+
+**Almacenamiento (filesystem / NFS):**
+- Área **pública**: imágenes de contenido y **documentos PDF públicos** (p. ej. certificados ISO). Se guarda la **key** en la DB y la API devuelve URLs absolutas armadas con `MEDIA_PUBLIC_BASE_URL`. Imágenes por `POST /media/uploads` (PNG/JPEG/WebP, 4 MB); PDFs por `POST /media/documents` (10 MB).
+- Ya **no hay área privada**: los CVs no se guardan (van directo a Gestión Petrogas). El almacenamiento administra solo la carpeta pública.
+- Todo archivo se valida por **magic bytes** (tipo real, no el mimetype declarado): PNG/JPEG/WebP (SVG prohibido) y PDF.
+- `DELETE /api/media/uploads` solo borra archivos **huérfanos**: si alguna entidad referencia la key (incluso una en la papelera), responde 409.
+
+**Formulario de postulación** (`POST /api/recruitment/applications`, multipart): nombre y apellido, título, localidad, teléfono, email, **selección múltiple de puestos** y el CV en PDF. Este backend **no guarda nada**: arma el multipart y se lo reenvía a Gestión Petrogas tal cual, CV incluido. Los puestos también son de ellos (`GET /api/recruitment/job-profiles` es un puente) y sus ids son **numéricos**.
+
+Las reglas del formulario —qué es obligatorio, qué largo tiene cada campo, qué combinaciones valen— las define **Gestión**, y acá no se duplican a propósito: duplicarlas garantiza que tarde o temprano queden desfasadas. Cuando algo no pasa, ellos responden **422 con el detalle por campo** y el frontend lo muestra (ver `GestionClient.fallo`).
+
+Este backend valida solo cuatro cosas, y cada una por un motivo propio: que el CV **esté** (400), que **no supere los 5 MB** (413), que sea **un PDF de verdad** y **sin contenido activo**, y que no se elijan **más de 3 puestos** (422).
+
+Las dos del CV no son reglas del formulario: son un control sobre lo que sale de esta red firmado con `GESTION_API_TOKEN`. Que un archivo sea un CV aceptable lo decide Gestión; que un binario arbitrario no salga hacia ellos etiquetado como PDF con nuestra firma lo decidimos nosotros. Y el máximo de puestos sí es una regla del negocio: el frontend también la aplica, pero un límite que solo vive en el navegador se saltea con `curl`.
+
+**Ojo:** verificar el tipo **no es un antivirus**. Corta el archivo mislabeleado y el JavaScript embebido evidente; un PDF con los objetos comprimidos puede esconderlo, y un exploit del lector no deja marcadores. Si hiciera falta una defensa de verdad, va del lado donde el archivo se guarda y se abre, que es Gestión.
+
+**Campo "Título" (catálogo propio + texto libre):** el catálogo `degree_titles` **sí** es local y lo administra RRHH desde el panel (`GET /api/recruitment/degree-titles`, público, para el autocompletado). Está sembrado con ~141 títulos del rubro, agrupados en 6 niveles educativos: primario, secundario común, secundario técnico, terciario, universitario y formación profesional. El formulario manda `degreeTitleId` y `degreeTitleName` si el postulante eligió uno de la lista, o `degreeTitleOther` si escribió uno que no está. El catálogo es un *snapshot* propio: el autocompletado nunca depende de un tercero.
+
+**Seeds del primer arranque** (solo actúan si la tabla está vacía —contando la papelera—, así nunca pisan lo editado desde el panel):
+- `CatalogSeedService` — **catálogo de títulos educativos** de RRHH: ~141 entradas. Sin él el autocompletado del formulario público queda vacío. Los puestos ya no se siembran: los sirve Gestión Petrogas.
+- `ContentSeedService` — **contenido editorial** con los textos reales de Petrogas: 2 servicios (Operación y Mantenimiento, Transporte de Personal) y 3 certificaciones (ISO 9001, 14001 y 45001). **No** incluye Well Testing ni la ISO 39001 de transporte, dados de baja por la empresa.
+
+## 📋 Registro de cambios y revisión del sitio
+
+Control de documentos de la certificación: **todo cambio sobre el contenido queda asentado** —quién, cuándo, qué campo y qué decía antes— y se exporta a Excel desde el panel (`GET /api/change-log/export`). Lo ven el **admin** y el **auditor**.
+
+El footer muestra un `Rev. NN` de dos dígitos que **sube solo: una revisión por cada día en que se cambió algo** (01, 02 … 99, y a los tres dígitos vuelve a 01). No hay endpoint que lo escriba, y eso es deliberado — un número que se puede editar a mano no prueba nada. Sale en `GET /api/site-settings`, junto a la marca de certificación.
+
+Tres decisiones que conviene conocer antes de tocar esto:
+
+- **Se captura con un subscriber de TypeORM, no con llamadas en cada servicio.** Eran ~36 sitios donde olvidarse no rompe nada: un asiento que falta es invisible hasta que alguien pregunta. El actor lo aporta un `AsyncLocalStorage` que abre un middleware (`change-log/audit-context.middleware.ts`); tiene que ser middleware y no interceptor, y el archivo explica por qué.
+- **Sin contexto de request no se registra nada.** Con esa sola regla quedan afuera las siembras del primer arranque —que son la línea de base, la Rev. 00— y las tareas de fondo, sin código especial para cada caso.
+- **El asiento se escribe en la misma transacción que el cambio.** Si el registro falla, el cambio se revierte. Para un rastro de auditoría es la propiedad correcta: un cambio sin asentar es peor que un cambio que no ocurrió, porque después no hay forma de distinguirlo de "no se tocó nada".
+
+Qué entidad se audita y con qué campos se declara en **un solo lugar**, `src/change-log/audited-entities.ts`. Si agregás una entidad de contenido y no la clasificás ahí, `audited-entities.spec.ts` falla.
+
+**Clientes y novedades no se siembran**: no hay contenido "de fábrica" para ellos, se cargan desde el panel.
+
+**Novedades desde LinkedIn (curaduría)**: no todo lo que se publica en LinkedIn va a la web. Un job de sincronización (`POST /api/news/linkedin/sync`) trae los posteos de la página a una **bandeja de candidatos** (`linkedin_imports`, tabla de staging); admin/rrhh **aprueba** los que quiera (`.../imports/:id/approve` con `category`) — se copia el contenido a `news_posts`, se descarga la imagen al almacenamiento y se publica — o los **rechaza**. El dedupe por `externalId` garantiza que lo ya aprobado o rechazado **no reaparezca** en la cola. La parte pública (`GET /api/news`) no cambia: las notas aprobadas salen ahí con `source: "linkedin"` y `externalUrl` al post original.
+- **Modo `stub`** (por defecto): usa posteos de ejemplo, sin llamar a LinkedIn. Sirve para desarrollar y probar todo el circuito de curaduría **sin depender del acceso real**.
+- **Modo `api`**: usa la **Community Management API** de LinkedIn. Requiere: (1) una app de desarrollador asociada a la página de empresa, (2) ser **admin** de esa página, (3) que **LinkedIn apruebe** el acceso al producto (revisión de negocio; puede tardar o denegarse), y (4) completar `LINKEDIN_ACCESS_TOKEN` + `LINKEDIN_ORGANIZATION_URN`. Sin credenciales, `sync` en modo `api` responde **503** con un mensaje claro; el resto del flujo (cola, aprobar, rechazar) funciona igual. Pendientes conocidos para cuando haya acceso real: renovación automática del token OAuth (hoy es un token estático de ~60 días) y ajuste fino del mapeo de imágenes de la Posts API.
+
+> **Refrescar un catálogo sembrado en desarrollo** (p. ej. tomar títulos nuevos): el seed solo actúa si la tabla está vacía, así que hay que vaciarla y reiniciar la app: **`DELETE FROM degree_titles;`**.
+
+**Papelera (soft delete) del catálogo**: el catálogo de contenido (servicios, certificaciones, clientes, novedades y títulos) usa **borrado recuperable**. `DELETE /api/<recurso>/:id` no destruye: setea `deletedAt` y manda a la papelera; TypeORM lo excluye automáticamente de todas las consultas (find y QueryBuilder). Endpoints extra por recurso: `GET /<recurso>/admin/trash` (ver borrados), `POST /<recurso>/:id/restore` (restaurar) y `DELETE /<recurso>/:id/permanent` (borrado físico definitivo — recién ahí se limpia el almacenamiento). La **visibilidad** (`isActive`/`isPublished`) es independiente: ocultar no es borrar, y `restore` **preserva** ese estado (una nota publicada vuelve publicada). Un item en la papelera **reserva su slug/nombre único**: crear otro igual da **409 con un `conflict: { id, field, value, inTrash }`** en el cuerpo, para que el panel ofrezca restaurar o eliminar definitivamente el bloqueante (ver `unique-conflict.util.ts`). Gracias a esa reserva, **restaurar nunca falla por duplicado**. La papelera **no se purga automáticamente**: queda hasta el borrado definitivo manual. Se implementa con una base `SoftDeletableEntity`; **no** se aplica a datos personales (mensajes de contacto) ni a tokens, que se borran físico. Garantías adicionales: (1) los **slugs son estables** — editar el título de una nota/servicio no cambia la URL (el slug solo cambia si se envía explícito); (2) `DELETE /media/uploads` **solo borra huérfanos** — 409 si alguna entidad (incluso en papelera) referencia la key; (3) al reemplazar una imagen, la key vieja se borra del almacenamiento **después** del save exitoso (nunca queda una entidad apuntando a un archivo borrado).
+
+**Postulaciones y CVs**: no se guardan en el sitio. El formulario los reenvía a Gestión Petrogas en el mismo request, así que la retención de esos datos personales es responsabilidad de ellos.
 
 ## 🐳 Plantillas de Docker
 

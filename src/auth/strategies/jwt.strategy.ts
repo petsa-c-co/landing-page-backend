@@ -44,14 +44,30 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             );
         }
 
-        // Un access token emitido ANTES del último cambio de contraseña deja
-        // de ser válido (cierra la ventana post-reset del JWT stateless). La
-        // comparación es en segundos, la granularidad del claim iat.
-        if (user.passwordChangedAt && typeof iat === 'number') {
-            const changedAtSeconds = Math.floor(
-                user.passwordChangedAt.getTime() / 1000,
+        // Un access token emitido ANTES de que se invalidaran las sesiones deja
+        // de ser válido, aunque todavía no haya vencido. Esto cierra la ventana
+        // del JWT stateless en dos casos: un cambio de contraseña y un cierre de
+        // sesiones hecho por un administrador. Vale el más reciente de los dos.
+        // La comparación es en segundos, la granularidad del claim iat.
+        const invalidatedAt = [user.passwordChangedAt, user.sessionsRevokedAt]
+            .filter((fecha): fecha is Date => fecha instanceof Date)
+            .reduce<Date | null>(
+                (ultima, fecha) =>
+                    !ultima || fecha > ultima ? fecha : ultima,
+                null,
             );
-            if (iat < changedAtSeconds) {
+
+        // `iat` viene en segundos, así que se lo lleva a milisegundos —el inicio
+        // de ese segundo— antes de comparar. Truncar el corte en vez de expandir
+        // el iat dejaba pasar los tokens emitidos dentro del MISMO segundo que
+        // la invalidación, que es justo el caso de un cierre de sesiones.
+        //
+        // Queda un margen de 1 segundo inherente a la resolución del claim: un
+        // token emitido en el mismo segundo del corte se rechaza aunque sea
+        // posterior. En la práctica solo afecta a quien vuelve a iniciar sesión
+        // en ese mismo segundo; reintentar alcanza.
+        if (invalidatedAt && typeof iat === 'number') {
+            if (iat * 1000 < invalidatedAt.getTime()) {
                 throw new UnauthorizedException(
                     'La sesión ya no es válida, por favor inicia sesión nuevamente',
                 );

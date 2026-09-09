@@ -15,6 +15,18 @@ export class RefreshToken extends BaseEntity {
     @Column({ type: 'boolean', default: false })
     isRevoked: boolean;
 
+    /**
+     * Momento en que este token se consumió PARA ROTARLO. Es la referencia de
+     * la ventana de gracia ante reutilizaciones (ver RefreshTokenService).
+     *
+     * OJO: se marca únicamente en la rotación. Las revocaciones por logout, por
+     * cambio de contraseña o por acción de un administrador dejan este campo en
+     * null a propósito, para que nunca puedan caer dentro de la ventana y
+     * "revivir" una sesión que se quiso cortar.
+     */
+    @Column({ type: 'timestamp', nullable: true })
+    rotatedAt: Date | null;
+
     @ManyToOne(() => User, (user) => user.refreshTokens, {
         onDelete: 'CASCADE',
     })

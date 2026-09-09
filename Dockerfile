@@ -44,4 +44,9 @@ USER node
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/api" || exit 1
 
-CMD ["node", "dist/main.js"]
+# Antes de arrancar, corre las migraciones pendientes (idempotente: TypeORM
+# guarda en la tabla "migrations" cuáles ya se aplicaron y no las repite).
+# Mismo criterio que AdminSeedService/ContentSeedService: reconciliar el
+# estado al arrancar en vez de exigir un paso manual aparte que se olvida.
+# Usa el cli.js compilado (sin ts-node, que es una devDependency ausente acá).
+CMD ["sh", "-c", "node ./node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js && node dist/main.js"]

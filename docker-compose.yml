@@ -1,16 +1,27 @@
 # Entorno de DESARROLLO local.
-# Levanta solo la base de datos; la app se corre en el host con `pnpm start:dev`.
+# Levanta la base de datos y (opcional) un MinIO local como reemplazo de
+# Cloudflare R2 mientras no esté decidido/pagado el servicio real; la app se
+# corre en el host con `pnpm start:dev`.
 # Levantar con:  docker compose --env-file .env.dev up -d
+#
+# "name" fija el proyecto de Compose de forma explícita. SIN esto, Compose usa
+# el nombre de la CARPETA como identificador interno (no container_name) para
+# decidir qué contenedores le pertenecen a este archivo — si otro proyecto tuyo
+# vive en una carpeta con el mismo nombre (p. ej. otro "backend/"), Compose los
+# trata como el mismo proyecto y un "up" puede recrear (destruir) contenedores
+# del OTRO proyecto. Ya pasó una vez con otro proyecto llamado igual; con
+# "name" fijo, esto no puede volver a ocurrir.
+name: petrogassa-landing
 services:
     # Base de datos PostgreSQL (solo para desarrollo local)
     db:
-        container_name: ${PROJECT_NAME}-db
+        container_name: ${PROJECT_NAME:-petrogassa-landing}-db
         image: postgres:17-alpine
         restart: unless-stopped
         init: true
         # Atado a loopback: accesible solo desde la máquina de desarrollo.
         ports:
-            - '127.0.0.1:${DATABASE_HOST_PORT}:5432'
+            - '127.0.0.1:${DATABASE_HOST_PORT:-5432}:5432'
         environment:
             POSTGRES_USER: ${DATABASE_USER}
             POSTGRES_PASSWORD: ${DATABASE_PASSWORD}

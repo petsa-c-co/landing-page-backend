@@ -1,6 +1,9 @@
 import {
     ClassSerializerInterceptor,
+    MiddlewareConsumer,
     Module,
+    NestModule,
+    RequestMethod,
     ValidationPipe,
 } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -18,6 +21,19 @@ import { validationSchema } from './config/validation.schema';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MailModule } from './mail/mail.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { StorageModule } from './storage/storage.module';
+import { MediaModule } from './media/media.module';
+import { ServicesModule } from './services/services.module';
+import { CertificationsModule } from './certifications/certifications.module';
+import { ClientsModule } from './clients/clients.module';
+import { NewsModule } from './news/news.module';
+import { RecruitmentModule } from './recruitment/recruitment.module';
+import { ContactModule } from './contact/contact.module';
+import { SitemapModule } from './sitemap/sitemap.module';
+import { SiteSettingsModule } from './site-settings/site-settings.module';
+import { ChangeLogModule } from './change-log/change-log.module';
+import { AuditContextMiddleware } from './change-log/audit-context.middleware';
+import { SeedModule } from './seed/seed.module';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -65,6 +81,21 @@ import { ValidationExceptionFilter } from './common/filters/validation-exception
         UsersModule,
         AuthModule,
         MailModule,
+        StorageModule,
+        MediaModule,
+        ServicesModule,
+        CertificationsModule,
+        ClientsModule,
+        NewsModule,
+        // "Trabajá con nosotros": el formulario público y los puestos son un
+        // PUENTE hacia Gestión Petrogas (no se guarda nada de eso acá); el
+        // catálogo de títulos académicos sí es nuestro.
+        RecruitmentModule,
+        ContactModule,
+        SiteSettingsModule,
+        SitemapModule,
+        SeedModule,
+        ChangeLogModule,
     ],
     controllers: [AppController],
     providers: [
@@ -119,4 +150,18 @@ import { ValidationExceptionFilter } from './common/filters/validation-exception
         },
     ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+    /**
+     * Abre el contexto de auditoría para TODOS los requests.
+     *
+     * Va como middleware y no como interceptor a propósito: un interceptor
+     * devuelve el Observable y Nest se suscribe fuera del contexto de
+     * AsyncLocalStorage, así que se perdería el usuario y cada cambio quedaría
+     * registrado como "sistema" sin ningún síntoma. Ver audit-context.middleware.ts.
+     */
+    configure(consumer: MiddlewareConsumer): void {
+        consumer
+            .apply(AuditContextMiddleware)
+            .forRoutes({ path: '*path', method: RequestMethod.ALL });
+    }
+}

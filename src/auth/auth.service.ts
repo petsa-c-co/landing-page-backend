@@ -6,6 +6,7 @@ import {
     UnauthorizedException,
 } from '@nestjs/common';
 import { User } from '@/users/entities/user.entity';
+import { UserStatus } from '@/users/enum/user-status.enum';
 import * as bcrypt from 'bcrypt';
 import { LoginUserDto } from './dto/login-user.dto';
 import { UsersService } from '@/users/users.service';
@@ -90,8 +91,19 @@ export class AuthService {
         if (!user) {
             throw new NotFoundException('El usuario no existe');
         }
-        if (user.isActive) {
+        // isActive es false para DOS estados distintos: una invitación que
+        // nunca se aceptó y una cuenta dada de baja. Mirando solo ese campo,
+        // reenviar la invitación a una cuenta desactivada la reactivaba —el
+        // enlace de activación es público y fija contraseña nueva—, revirtiendo
+        // en silencio una baja hecha por otro admin. Se usa el estado derivado,
+        // igual que reactivate() y deletePendingInvitation().
+        if (user.status === UserStatus.ACTIVO) {
             throw new BadRequestException('La cuenta ya está activada');
+        }
+        if (user.status === UserStatus.DESACTIVADO) {
+            throw new BadRequestException(
+                'La cuenta fue dada de baja. Reactivala desde el panel en lugar de reenviar la invitación.',
+            );
         }
 
         // Un solo token de activación vigente por usuario.
@@ -173,6 +185,16 @@ export class AuthService {
         const oldToken = await this.refreshTokenService.consume(refreshToken);
         const user = oldToken.user;
 
+        // Defensa en profundidad: desactivar una cuenta revoca sus refresh
+        // tokens, pero si por cualquier motivo sobreviviera uno, no debe poder
+        // emitir accesos nuevos. JwtStrategy igual rechazaría el access token;
+        // esto evita entregárselo.
+        if (!user.isActive) {
+            throw new UnauthorizedException(
+                'La cuenta no está activa, por favor inicia sesión nuevamente',
+            );
+        }
+
         // 2. Generar un nuevo Access Token
         const accessToken = await this.jwtService.signAsync({ sub: user.id });
 
@@ -225,6 +247,19 @@ export class AuthService {
             VerificationTokenType.PASSWORD_RESET,
         );
         const user = verificationToken.user;
+
+        // Simétrico con forgotPassword, que solo emite el enlace para cuentas
+        // activas: acá se vuelve a mirar porque la baja pudo ocurrir DESPUÉS de
+        // emitirlo y el enlace vive una hora. Sin esto, una cuenta dada de baja
+        // quedaba con la contraseña que eligió su titular después de la baja, y
+        // esa contraseña pasaba a ser la válida si algún día se la reactivaba.
+        // Mensaje neutro a propósito: no confirma el estado de la cuenta.
+        if (!user.isActive) {
+            throw new BadRequestException(
+                'El enlace ya no es válido. Pedí uno nuevo desde "Olvidé mi contraseña".',
+            );
+        }
+
         const newPassword = await bcrypt.hash(
             resetPasswordDto.newPassword,
             BCRYPT_ROUNDS,

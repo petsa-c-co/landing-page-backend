@@ -3,7 +3,8 @@ import { Column, Entity, OneToMany } from 'typeorm';
 import { UserRoles } from '@/auth/enum/user-roles.enum';
 import { VerificationToken } from '@/auth/entities/verification-token.entity';
 import { RefreshToken } from '@/auth/entities/refresh-token.entity';
-import { Exclude } from 'class-transformer';
+import { Exclude, Expose } from 'class-transformer';
+import { UserStatus } from '../enum/user-status.enum';
 
 @Entity('users')
 export class User extends BaseEntity {
@@ -30,6 +31,15 @@ export class User extends BaseEntity {
     @Exclude()
     passwordChangedAt: Date | null;
 
+    // Última vez que un administrador cerró las sesiones de esta cuenta.
+    // Funciona igual que passwordChangedAt: JwtStrategy rechaza los access
+    // tokens emitidos antes de esta fecha. Sin esto, revocar los refresh tokens
+    // dejaría al access token vigente hasta 15 minutos más, que es justo lo que
+    // no se quiere en el caso de una notebook perdida.
+    @Column({ type: 'timestamp', nullable: true })
+    @Exclude()
+    sessionsRevokedAt: Date | null;
+
     @Column({ type: 'boolean', default: false })
     isActive: boolean;
 
@@ -43,6 +53,21 @@ export class User extends BaseEntity {
 
     @Column({ type: 'boolean', default: false })
     isEmailVerified: boolean;
+
+    /**
+     * Estado de la cuenta para el panel. Se calcula y no se guarda, así no
+     * puede quedar desincronizado con isActive/password (ver UserStatus).
+     *
+     * Depende de que `password` venga cargado: es una columna normal, así que
+     * las consultas la traen salvo que se use un `select` explícito.
+     */
+    @Expose()
+    get status(): UserStatus {
+        if (this.isActive) {
+            return UserStatus.ACTIVO;
+        }
+        return this.password ? UserStatus.DESACTIVADO : UserStatus.PENDIENTE;
+    }
 
     @OneToMany(
         () => VerificationToken,

@@ -1,5 +1,6 @@
 import {
     Controller,
+    Get,
     Post,
     Body,
     Param,
@@ -22,6 +23,7 @@ import { ActivateAccountDto } from './dto/activate-account.dto';
 import { ConfigService } from '@nestjs/config';
 import { ResponseMessage } from '@/common/decorators/response-message.decorator';
 import { Auth } from './decorators/auth.decorator';
+import { GetUser } from './decorators/get-user.decorator';
 import { UserRoles } from './enum/user-roles.enum';
 
 // El refresh token solo se necesita en los endpoints de auth, así que se limita
@@ -150,6 +152,23 @@ export class AuthController {
     ): Promise<PublicUser> {
         const { user, tokens } = await this.authService.login(loginUserDto);
         this.setAuthCookies(res, tokens);
+        return user;
+    }
+
+    /**
+     * Usuario de la sesión actual, con sus roles.
+     *
+     * Es lo que permite al panel decidir qué mostrar tras recargar la página:
+     * las cookies son httpOnly, así que el frontend no puede leer el token ni
+     * deducir el rol por su cuenta, y `login` no vuelve a ejecutarse.
+     *
+     * Se responde con la entidad, que el serializador global limpia de campos
+     * sensibles (contraseña), igual que `GET /users/:id`.
+     */
+    @Get('me')
+    @Auth()
+    @ResponseMessage('Sesión obtenida correctamente')
+    me(@GetUser() user: User): User {
         return user;
     }
 
