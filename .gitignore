@@ -73,3 +73,11 @@ skills-lock.json
 /storage
 backups/
 REVISION.md
+
+# Previsualización de correos: es una herramienta de desarrollo que compila a la
+# raíz del proyecto. Su salida no va al repositorio (una vez se commitearon el
+# .js, el .d.ts y el .js.map sin su fuente, y quedaron ahí sin poder tocarse).
+preview-mails.js
+preview-mails.d.ts
+preview-mails.js.map
+email-previews/

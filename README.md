@@ -214,6 +214,12 @@ app-2026/
 
 Los tres servicios escuchan **solo en loopback**: el despliegue asume un nginx en el host que termina TLS y hace de proxy.
 
+> **Por qué el frontend está en el compose del backend.** Este archivo no es "del backend": es el que orquesta el despliegue completo, y tiene que vivir en algún repositorio. Puesto acá, desplegar es **un solo comando** y el frontend se construye solo.
+>
+> La alternativa era un compose en la carpeta padre, por encima de los dos proyectos. Es más prolijo conceptualmente —ninguno de los dos manda sobre el otro— pero crea un tercer archivo que **no pertenece a ningún repositorio**, que nadie versiona y que alguien tiene que acordarse de copiar al servidor y de mantener sincronizado. Se eligió el acoplamiento a conciencia: es visible en una línea (`context: ../frontend`) y se paga una sola vez, al ubicar las carpetas.
+>
+> El precio concreto de esta decisión es que **este repositorio no se despliega solo**: sin la carpeta hermana, `docker compose build` falla.
+
 ### Consideraciones del frontend
 
 **`VITE_API_URL` es una variable de BUILD, no de runtime.** Vite la incrusta dentro del JavaScript al compilar, así que cambiarla exige **reconstruir la imagen**; reiniciar el contenedor no hace absolutamente nada. Por eso va en `args` del compose y no en `environment`.
@@ -250,6 +256,50 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f backend
 ```
 
 > **Nota sobre el build:** `nest build` usa `tsconfig.build.json` (excluye `test/` y `*.spec.ts`), por lo que la salida es siempre `dist/main.js`, tanto localmente como en Docker. `pnpm start:prod` funciona en ambos casos.
+
+## 💾 Respaldos
+
+`ops/backup.sh` respalda las dos cosas que no se pueden reconstruir: la **base
+de datos** y los **archivos subidos** desde el panel.
+
+Se programa en el crontab del usuario que despliega. **No necesita root.**
+
+```
+0 3 * * * /ruta/al/backend/ops/backup.sh >> /ruta/a/data/backups/backup.log 2>&1
+```
+
+Deja en `data/backups/` un `.sql.gz` y un `.tar.gz` por corrida, y borra los de
+más de 30 días (`BACKUP_RETENTION_DAYS` lo cambia).
+
+**Por qué solo eso.** Las postulaciones nunca tocan este servidor: se reenvían a
+Gestión y el CV se descarta. Los mensajes de contacto llegan completos al buzón
+de la empresa por correo. Lo que sí es irrecuperable es el **registro de cambios
+y las revisiones** —el rastro que pide la certificación, que no existe en ningún
+otro lado— y el **contenido editado del sitio**. Ojo con una confusión fácil: el
+seed inicial **no es un respaldo**, solo repone la línea de base (dos servicios y
+tres certificaciones), y no repone ninguna imagen.
+
+**Por qué también los archivos.** Sin ellos la base queda apuntando a imágenes
+que no existen, así que el sitio no se ve "de fábrica": se ve roto.
+
+El script se niega a guardar un volcado vacío o corrupto, y escribe con nombre
+temporal hasta terminar, así que nunca queda un archivo a medio hacer con cara
+de respaldo bueno. El `pg_dump` corre **dentro** del contenedor y toma las
+credenciales de su propio entorno: no hay ninguna contraseña escrita en el
+script.
+
+### Restaurar
+
+```bash
+./ops/restaurar.sh                          # lista lo disponible
+./ops/restaurar.sh <archivo.sql.gz>         # muestra qué haría, sin tocar nada
+./ops/restaurar.sh <archivo.sql.gz> --confirmar
+```
+
+Sin `--confirmar` no modifica nada. Con él, detiene el backend —si la aplicación
+sigue conectada, el `DROP TABLE` del volcado se queda esperando y la
+restauración cuelga—, restaura y lo vuelve a levantar. Para reponer también las
+imágenes se le pasa el `.tar.gz` de la misma fecha.
 
 ## 🗃️ Migraciones de base de datos
 
