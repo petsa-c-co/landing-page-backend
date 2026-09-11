@@ -141,6 +141,41 @@ describe('validationSchema', () => {
         });
     });
 
+    /**
+     * Esto se desplegó una vez con `https://petrogassa.com/api` y el sitio quedó
+     * sin imágenes: la subida respondía 200, la entidad se guardaba bien, y el
+     * 404 aparecía recién al mirar el sitio. El arranque tiene que atajarlo.
+     */
+    describe('MEDIA_PUBLIC_BASE_URL', () => {
+        const validar = (valor: string): string | undefined =>
+            validationSchema.validate(
+                { ...BASE, MEDIA_PUBLIC_BASE_URL: valor },
+                { allowUnknown: true },
+            ).error?.message;
+
+        it.each([
+            'https://petrogassa.com',
+            'http://localhost:3100',
+            'https://cdn.petrogassa.com',
+        ])('acepta un origen sin ruta: %s', (valor) => {
+            expect(validar(valor)).toBeUndefined();
+        });
+
+        it('rechaza una ruta, que es lo que rompió producción', () => {
+            expect(validar('https://petrogassa.com/api')).toMatch(/ruta/i);
+        });
+
+        it('rechaza la barra final, que duplicaría la barra de la URL', () => {
+            expect(validar('https://petrogassa.com/')).toMatch(/barra/i);
+        });
+
+        it('el mensaje explica qué hacer, no solo que está mal', () => {
+            const mensaje = validar('https://petrogassa.com/api') ?? '';
+            expect(mensaje).toMatch(/proxy/i);
+            expect(mensaje).toMatch(/media/);
+        });
+    });
+
     it('sin NODE_ENV falla: en producción arrancaría con synchronize activo', () => {
         const sinNodeEnv: Record<string, unknown> = { ...BASE };
         delete sinNodeEnv.NODE_ENV;

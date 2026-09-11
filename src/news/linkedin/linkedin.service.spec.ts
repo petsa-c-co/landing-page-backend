@@ -71,9 +71,7 @@ describe('LinkedInImportService', () => {
         };
         source = { fetchRecentPosts: jest.fn().mockResolvedValue([]) };
         newsService = {
-            createFromLinkedIn: jest
-                .fn()
-                .mockResolvedValue({ id: 'nota-1' }),
+            createFromLinkedIn: jest.fn().mockResolvedValue({ id: 'nota-1' }),
         };
         storageService = {
             uploadMedia: jest
@@ -143,8 +141,7 @@ describe('LinkedInImportService', () => {
     describe('findQueue', () => {
         const consulta = (
             over: Partial<LinkedInQueueQueryDto> = {},
-        ): LinkedInQueueQueryDto =>
-            ({ page: 1, limit: 10, ...over });
+        ): LinkedInQueueQueryDto => ({ page: 1, limit: 10, ...over });
 
         it('por defecto muestra los pendientes', async () => {
             await servicio.findQueue(consulta());
@@ -250,10 +247,10 @@ describe('LinkedInImportService', () => {
             expect(notaCreada()).toMatchObject({ title: 'Primera línea' });
         });
 
+        // La columna es NOT NULL, así que "sin texto" en la base es la cadena
+        // vacía, no null. Es la misma rama de deriveTitle.
         it('sin texto, el título es el autor', async () => {
-            importRepository.findOne.mockResolvedValue(
-                CANDIDATO({ text: null }),
-            );
+            importRepository.findOne.mockResolvedValue(CANDIDATO({ text: '' }));
 
             await servicio.approve('imp-1', DTO);
 
@@ -300,9 +297,7 @@ describe('LinkedInImportService', () => {
          * imagen no puede impedir que se publique la novedad.
          */
         it('si la descarga falla, publica igual y sin portada', async () => {
-            global.fetch = jest
-                .fn()
-                .mockResolvedValue({ ok: false });
+            global.fetch = jest.fn().mockResolvedValue({ ok: false });
 
             await servicio.approve('imp-1', DTO);
 

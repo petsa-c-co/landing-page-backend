@@ -1,5 +1,47 @@
 import * as Joi from 'joi';
 
+/**
+ * MEDIA_PUBLIC_BASE_URL tiene que ser SOLO un origen, sin ruta y sin barra
+ * final: `https://petrogassa.com`, no `https://petrogassa.com/api`.
+ *
+ * El motivo es que los archivos se sirven en la RAÍZ del backend
+ * (`useStaticAssets` sin prefijo, ver main.ts), así que la URL pública de una
+ * imagen es `<origen>/media/...`. Si esta variable lleva una ruta, las URLs que
+ * devuelve la API apuntan a un lugar donde no hay nada.
+ *
+ * Se valida al arrancar porque ese desajuste NO ROMPE NADA a la vista: la
+ * subida responde 200, la entidad se guarda bien y la imagen da 404 recién
+ * cuando alguien mira el sitio. Ya pasó una vez en producción.
+ *
+ * Si algún día un CDN necesita servir desde una subruta, hay que cambiar las dos
+ * puntas: esta variable y el prefijo del `useStaticAssets`.
+ */
+function sinRutaNiBarraFinal(
+    valor: string,
+    helpers: Joi.CustomHelpers,
+): string {
+    if (valor.endsWith('/')) {
+        return helpers.message({
+            custom: 'MEDIA_PUBLIC_BASE_URL no puede terminar en barra: las URLs se arman como <base>/media/...',
+        }) as unknown as string;
+    }
+    let ruta: string;
+    try {
+        ruta = new URL(valor).pathname;
+    } catch {
+        return valor; // .uri() ya se encargó de rechazarla.
+    }
+    if (ruta !== '/' && ruta !== '') {
+        return helpers.message({
+            custom:
+                `MEDIA_PUBLIC_BASE_URL no puede llevar una ruta ("${ruta}"): los archivos se sirven en la raíz ` +
+                'del backend, así que las URLs quedarían apuntando a la nada. Usá solo el origen ' +
+                '(https://dominio) y que el proxy mande /media al backend.',
+        }) as unknown as string;
+    }
+    return valor;
+}
+
 export const validationSchema = Joi.object({
     // SIN valor por defecto, a propósito: si NODE_ENV faltara y cayera en
     // 'development', producción arrancaría con synchronize de TypeORM activo,
@@ -77,7 +119,10 @@ export const validationSchema = Joi.object({
     // localhost dentro de las entidades, y eso se descubre recién cuando alguien
     // no ve las imágenes. Si mañana un nginx o un CDN sirven esa misma carpeta,
     // se apunta acá y no cambia el código.
-    MEDIA_PUBLIC_BASE_URL: Joi.string().uri().required(),
+    MEDIA_PUBLIC_BASE_URL: Joi.string()
+        .uri()
+        .custom(sinRutaNiBarraFinal, 'base de medios servible')
+        .required(),
     // Buzón de la empresa que recibe las notificaciones del form de contacto.
     CONTACT_INBOX_EMAIL: Joi.string().email().required(),
     // Integración con LinkedIn (importación de novedades a la cola de
