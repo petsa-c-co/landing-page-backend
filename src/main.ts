@@ -82,10 +82,6 @@ async function bootstrap(): Promise<void> {
 
     await app.listen(process.env.PORT ?? 3000);
 }
-// Sin este catch, cualquier fallo al arrancar —config inválida, base
-// inaccesible, openapi.yaml malformado— termina como un
-// UnhandledPromiseRejection con el motivo "[object Object]": sin stack, sin
-// archivo y sin línea. Acá se imprime el detalle real y se sale con código 1.
 bootstrap().catch((err: unknown) => {
     const detalle =
         err instanceof Error
