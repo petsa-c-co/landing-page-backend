@@ -21,7 +21,6 @@ async function bootstrap(): Promise<void> {
     // En desarrollo NO hay proxy: no se confía en X-Forwarded-For (spoofeable).
     app.set('trust proxy', isProduction ? 1 : false);
 
-    // Cabeceras de seguridad (HSTS, X-Content-Type-Options, etc.)
     app.use(helmet());
 
     // CORS para que el frontend lea/envíe cookies. En producción se acepta
@@ -57,15 +56,6 @@ async function bootstrap(): Promise<void> {
         index: false,
         redirect: false,
         setHeaders: (res: ServerResponse): void => {
-            // Helmet aplica Cross-Origin-Resource-Policy: same-origin a TODAS
-            // las respuestas. Estas imágenes son públicas por diseño y las
-            // muestra el sitio, que corre en otro origen (otro puerto en
-            // desarrollo, otro subdominio en producción): con same-origin el
-            // navegador las descarga y se niega a dibujarlas
-            // (ERR_BLOCKED_BY_RESPONSE.NotSameOrigin).
-            //
-            // El override es SOLO para los archivos estáticos: el resto de la
-            // API sigue con same-origin, que es lo que corresponde.
             res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
         },
     });
@@ -75,14 +65,6 @@ async function bootstrap(): Promise<void> {
     // El cuerpo de una nota de prensa puede superar los 100 kb por defecto de
     // Express. Los archivos (multipart) los limita multer por su lado.
     app.use(json({ limit: '1mb' }));
-
-    // Pipes, interceptores y filtros globales se registran como providers
-    // (APP_PIPE / APP_INTERCEPTOR / APP_FILTER) en AppModule, de modo que los
-    // tests e2e ejerciten exactamente la misma configuración.
-
-    // Documentación OpenAPI: solo fuera de producción. Además de reducir la
-    // superficie expuesta, evita que la imagen de producción (que no incluye
-    // openapi.yaml) falle al arrancar.
     if (!isProduction) {
         const yamlFilePath = path.join(process.cwd(), 'openapi.yaml');
         const document = yaml.load(yamlFilePath) as unknown as OpenAPIObject;
